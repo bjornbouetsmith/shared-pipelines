@@ -49,8 +49,13 @@ repository root, installs the .NET 10 SDK, restores, builds and tests it.
   runners are not supported.
 - **`actions/checkout` is done for you** and checks out the *calling* repository,
   because the `github` context always belongs to the caller.
-- **Permissions are downgrade-only:** a called workflow can never get more than
-  the calling job grants it. The tables below list what each workflow needs.
+- **Permissions are the caller's responsibility.** These workflows declare no
+  `permissions:` block, because a called workflow that *declares* a scope the
+  caller did not grant fails the whole run at startup with
+  `The workflow is requesting 'statuses: write', but is only allowed 'statuses: none'`.
+  Declaring the minimum would force every caller to grant permissions for
+  features it never uses, so grant exactly what you need in the calling job.
+  The tables below list the requirement per feature.
 - **Secrets are not inherited implicitly:** pass them explicitly, or use
   `secrets: inherit`.
 
@@ -105,8 +110,13 @@ jobs:
 
 ### Permissions
 
-`contents: read`, `packages: read` (only needed with `nuget-feed-owner`),
-`statuses: write` (only needed with `set-commit-status`).
+Grant these in the calling job:
+
+| Scope | Needed for |
+|---|---|
+| `contents: read` | checking out the repository |
+| `packages: read` | `nuget-feed-owner` |
+| `statuses: write` | `set-commit-status` |
 
 ---
 
@@ -172,9 +182,16 @@ the `.nupkg` files. GitHub Packages is on by default and uses
 
 ### Permissions
 
-`contents: read`, `packages: write`, `id-token: write` (for the nuget.org OIDC
-login). Publishing to nuget.org also needs a **trusted publishing policy** on
-nuget.org pointing at this workflow file.
+Grant these in the calling job:
+
+| Scope | Needed for |
+|---|---|
+| `contents: read` | checking out the repository |
+| `packages: write` | `publish-github-packages` |
+| `id-token: write` | `publish-nuget-org` (OIDC login) |
+
+Publishing to nuget.org also needs a **trusted publishing policy** on nuget.org
+pointing at this workflow file.
 
 ---
 
@@ -256,7 +273,12 @@ jobs:
 
 ### Permissions
 
-`contents: write`, `pull-requests: write`.
+Grant these in the calling job:
+
+| Scope | Needed for |
+|---|---|
+| `contents: write` | pushing the release branch and the release tag |
+| `pull-requests: write` | opening the release pull request (`create-pr: true`) |
 
 ### Gotchas
 

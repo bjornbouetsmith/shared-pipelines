@@ -172,10 +172,12 @@ on:
         description: 'Release tag created by the tag half.'
         value: ${{ jobs.tag.outputs.tag }}
 
-permissions:
-  contents: write
-  pull-requests: write
-
+# No `permissions:` block on purpose. A called workflow can only reduce the
+# caller's GITHUB_TOKEN permissions, and asking for a scope the caller did not
+# grant fails the whole run at startup with
+# "The workflow is requesting '<scope>', but is only allowed 'none'".
+# Grant `contents: write` and `pull-requests: write` in the calling job; see
+# README.md.
 jobs:
   prepare:
     name: Bump version, build, test and open PR

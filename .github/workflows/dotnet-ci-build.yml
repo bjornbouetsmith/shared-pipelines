@@ -114,11 +114,13 @@ on:
         description: 'Solution or project that was restored, built and tested.'
         value: ${{ jobs.build.outputs.target }}
 
-permissions:
-  contents: read
-  packages: read
-  statuses: write # only used when set-commit-status is true
-
+# No `permissions:` block on purpose. A called workflow can only reduce the
+# caller's GITHUB_TOKEN permissions, and asking for a scope the caller did not
+# grant fails the whole run at startup with
+# "The workflow is requesting '<scope>', but is only allowed 'none'".
+# Declaring the minimum here would therefore force every caller to grant
+# `statuses: write` even when set-commit-status is off.
+# Grant the scopes you need in the calling job; see README.md.
 jobs:
   build:
     name: Restore, build and test

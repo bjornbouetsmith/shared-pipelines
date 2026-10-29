@@ -147,11 +147,13 @@ on:
         description: 'Directory containing the packed .nupkg files.'
         value: ${{ jobs.release.outputs.packages_path }}
 
-permissions:
-  contents: read
-  packages: write
-  id-token: write
-
+# No `permissions:` block on purpose. A called workflow can only reduce the
+# caller's GITHUB_TOKEN permissions, and asking for a scope the caller did not
+# grant fails the whole run at startup with
+# "The workflow is requesting '<scope>', but is only allowed 'none'".
+# Declaring the minimum here would force every caller to grant `id-token: write`
+# even when publish-nuget-org is off.
+# Grant the scopes you need in the calling job; see README.md.
 jobs:
   release:
     name: Build, test and publish
