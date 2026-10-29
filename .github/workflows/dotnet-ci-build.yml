@@ -214,6 +214,42 @@ jobs:
         if: ${{ !inputs.sonar }}
         uses: actions/checkout@v7
 
+      - name: Set commit status to pending
+        if: ${{ inputs.set-commit-status }}
+        env:
+          STATUS_TOKEN: ${{ github.token }}
+          STATUS_CONTEXT: ${{ inputs.status-context }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          API_URL: ${{ github.api_url }}
+        run: |
+          set -euo pipefail
+          payload="$(jq -nc --arg url "$TARGET_URL" --arg context "$STATUS_CONTEXT" \
+            '{state: "pending", target_url: $url, description: "The build is pending!", context: $context}')"
+          curl --fail-with-body -sS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $STATUS_TOKEN" \
+            "$API_URL/repos/${REPOSITORY}/statuses/${COMMIT_SHA}" -d "$payload"
+
+      - name: Set quality gate status to pending
+        if: ${{ inputs.sonar && inputs.sonar-publish-status }}
+        env:
+          STATUS_TOKEN: ${{ github.token }}
+          STATUS_CONTEXT: ${{ inputs.sonar-status-context }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          API_URL: ${{ github.api_url }}
+        run: |
+          set -euo pipefail
+          payload="$(jq -nc --arg url "$TARGET_URL" --arg context "$STATUS_CONTEXT" \
+            '{state: "pending", target_url: $url, description: "The quality gate is pending!", context: $context}')"
+          curl --fail-with-body -sS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $STATUS_TOKEN" \
+            "$API_URL/repos/${REPOSITORY}/statuses/${COMMIT_SHA}" -d "$payload"
+
       - name: Validate Sonar inputs
         if: ${{ inputs.sonar }}
         env:
@@ -317,42 +353,6 @@ jobs:
           fi
           echo "Building '$target'"
           echo "target=$target" >> "$GITHUB_OUTPUT"
-
-      - name: Set commit status to pending
-        if: ${{ inputs.set-commit-status }}
-        env:
-          STATUS_TOKEN: ${{ github.token }}
-          STATUS_CONTEXT: ${{ inputs.status-context }}
-          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          REPOSITORY: ${{ github.repository }}
-          COMMIT_SHA: ${{ github.sha }}
-          API_URL: ${{ github.api_url }}
-        run: |
-          set -euo pipefail
-          payload="$(jq -nc --arg url "$TARGET_URL" --arg context "$STATUS_CONTEXT" \
-            '{state: "pending", target_url: $url, description: "The build is pending!", context: $context}')"
-          curl --fail-with-body -sS -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $STATUS_TOKEN" \
-            "$API_URL/repos/${REPOSITORY}/statuses/${COMMIT_SHA}" -d "$payload"
-
-      - name: Set quality gate status to pending
-        if: ${{ inputs.sonar && inputs.sonar-publish-status }}
-        env:
-          STATUS_TOKEN: ${{ github.token }}
-          STATUS_CONTEXT: ${{ inputs.sonar-status-context }}
-          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          REPOSITORY: ${{ github.repository }}
-          COMMIT_SHA: ${{ github.sha }}
-          API_URL: ${{ github.api_url }}
-        run: |
-          set -euo pipefail
-          payload="$(jq -nc --arg url "$TARGET_URL" --arg context "$STATUS_CONTEXT" \
-            '{state: "pending", target_url: $url, description: "The quality gate is pending!", context: $context}')"
-          curl --fail-with-body -sS -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $STATUS_TOKEN" \
-            "$API_URL/repos/${REPOSITORY}/statuses/${COMMIT_SHA}" -d "$payload"
 
       - name: Restore dependencies
         env:
