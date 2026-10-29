@@ -511,6 +511,9 @@ jobs:
           TAG: ${{ steps.read.outputs.tag }}
           AUTHOR_NAME: ${{ inputs.commit-author-name }}
           AUTHOR_EMAIL: ${{ inputs.commit-author-email }}
+          RELEASE_TOKEN: ${{ secrets.release-token || github.token }}
+          REPOSITORY: ${{ github.repository }}
+          API_URL: ${{ github.api_url }}
         run: |
           set -euo pipefail
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -528,8 +531,40 @@ jobs:
             exit 1
           fi
 
-          git config user.name "$AUTHOR_NAME"
-          git config user.email "$AUTHOR_EMAIL"
-          git tag -a "$TAG" "$release_commit" -m "Release $TAG"
-          git push origin "$TAG"
+          # Create the tag object and the ref through the REST API rather than
+          # with "git push origin $TAG". GITHUB_TOKEN is a GitHub App token and
+          # an App may not create a ref that makes workflow files reachable
+          # unless it holds the "workflows" permission, which GITHUB_TOKEN never
+          # has. Tag pushes to any repository whose history touches
+          # .github/workflows therefore fail with
+          #   refusing to allow a GitHub App to create or update workflow
+          #   '.github/workflows/ci.yml' without `workflows` permission
+          # even though the tag itself changes no file. The git data API is not
+          # subject to that check.
+          tag_payload="$(jq -nc \
+            --arg tag "$TAG" \
+            --arg message "Release $TAG" \
+            --arg object "$release_commit" \
+            --arg name "$AUTHOR_NAME" \
+            --arg email "$AUTHOR_EMAIL" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{tag: $tag, message: $message, object: $object, type: "commit",
+              tagger: {name: $name, email: $email, date: $date}}')"
+          tag_sha="$(curl --fail-with-body -sS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $RELEASE_TOKEN" \
+            "$API_URL/repos/${REPOSITORY}/git/tags" \
+            -d "$tag_payload" | jq -r '.sha // empty')"
+          if [[ -z "$tag_sha" ]]; then
+            echo "::error title=Tag creation failed::The API did not return a tag object for '$TAG'."
+            exit 1
+          fi
+
+          ref_payload="$(jq -nc --arg ref "refs/tags/$TAG" --arg sha "$tag_sha" \
+            '{ref: $ref, sha: $sha}')"
+          curl --fail-with-body -sS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $RELEASE_TOKEN" \
+            "$API_URL/repos/${REPOSITORY}/git/refs" \
+            -d "$ref_payload" > /dev/null
           echo "Created and pushed tag $TAG on $release_commit"

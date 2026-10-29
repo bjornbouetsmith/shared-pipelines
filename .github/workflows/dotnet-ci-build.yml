@@ -271,7 +271,9 @@ jobs:
           dotnet tool install "${args[@]}" || dotnet tool update "${args[@]}"
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
           export PATH="$HOME/.dotnet/tools:$PATH"
-          dotnet-sonarscanner --version
+          # Not "dotnet-sonarscanner --version": recent scanner versions treat a
+          # missing begin/end argument as an error and exit 1.
+          command -v dotnet-sonarscanner
 
       - name: Restore NuGet cache
         if: ${{ inputs.cache }}

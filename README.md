@@ -366,6 +366,14 @@ Grant these in the calling job:
   calling repository.
 - The release PR must be merged for `tag` to see the new version; `tag` never
   creates a tag that already exists, so re-runs are safe.
+- `tag` creates the annotated tag object and the `refs/tags/<tag>` ref through
+  the GitHub REST API instead of `git push origin <tag>`. `GITHUB_TOKEN` is a
+  GitHub App token, and an App may not create a ref that makes workflow files
+  reachable without the `workflows` permission — which `GITHUB_TOKEN` can never
+  have. A plain tag push therefore fails in any repository whose history changes
+  `.github/workflows/**`, with *"refusing to allow a GitHub App to create or
+  update workflow … without `workflows` permission"*. The API path has no such
+  restriction and needs only `contents: write`.
 - If `main` is protected against direct pushes, add `release-token` with a
   bypass, or merge the release PR and let `tag` push only the tag.
 
