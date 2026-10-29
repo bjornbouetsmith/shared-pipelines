@@ -8,7 +8,7 @@
 #         contents: read
 #         packages: write    # required to push to GitHub Packages
 #         id-token: write    # required for nuget.org OIDC login
-#       uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1
+#       uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.1.0
 #       with:
 #         solution: Source/MyApp.slnx
 #         publish-nuget-org: true
