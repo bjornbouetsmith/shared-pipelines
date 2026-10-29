@@ -1,0 +1,533 @@
+# Reusable release-version pipeline for .NET repositories.
+#
+# Two modes, both in this one workflow:
+#
+#   prepare  increments the version in <version-file>, builds and tests the
+#            change on a release branch and opens a pull request.
+#   tag      after the release pull request is merged, creates and pushes the
+#            release tag for the version found in <version-file>.
+#
+# Call it from any repository with an "auto" mode that picks the right half
+# from the triggering event:
+#
+#   on:
+#     workflow_dispatch:
+#       inputs:
+#         version_part:
+#           type: choice
+#           options: [Patch, Minor, Major]
+#           default: Patch
+#     push:
+#       branches: [ main ]
+#
+#   jobs:
+#     release:
+#       permissions:
+#         contents: write
+#         pull-requests: write   # needed to open the release pull request
+#       uses: bjornbouetsmith/shared-pipelines/.github/workflows/increment-version.yml@v1
+#       with:
+#         version-part: ${{ inputs.version_part || 'patch' }}
+#       secrets: inherit
+#
+# In "auto" mode (the default) a workflow_dispatch event runs "prepare" and a
+# push event runs "tag". Set mode to "prepare" or "tag" to force one half.
+#
+# Set a RELEASE_TOKEN style secret and pass it as release-token when the pull
+# request opened here has to trigger the repository's own CI: events created
+# with GITHUB_TOKEN do not start other workflows, and GITHUB_TOKEN-created
+# pull requests need "Allow GitHub Actions to create and approve pull requests"
+# enabled in the repository settings.
+#
+# Runner requirement: the steps are bash, so runs-on must be Linux or macOS.
+# Full input/secret/output reference: README.md
+
+name: Increment Version and Tag Release
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: 'auto, prepare or tag. auto = prepare on workflow_dispatch, tag on push.'
+        type: string
+        default: 'auto'
+      version-part:
+        description: 'Semantic version part to increment: patch, minor or major.'
+        type: string
+        default: 'patch'
+      version-file:
+        description: >-
+          File that holds the <Version>x.y.z</Version> element, relative to the
+          repository root.
+        type: string
+        default: 'Directory.Build.props'
+      solution:
+        description: >-
+          Solution or project to build and test on the release branch, relative
+          to working-directory. Empty = first *.slnx or *.sln in working-directory.
+        type: string
+        default: ''
+      working-directory:
+        description: 'Directory containing the solution.'
+        type: string
+        default: '.'
+      dotnet-version:
+        description: >-
+          .NET SDK version to install, e.g. "10.0.x".
+          Ignored when global-json-file is set.
+        type: string
+        default: '10.0.x'
+      global-json-file:
+        description: 'global.json to read the SDK version from. Overrides dotnet-version.'
+        type: string
+        default: ''
+      configuration:
+        description: 'Build configuration used for build and test.'
+        type: string
+        default: 'Release'
+      runs-on:
+        description: >-
+          Runner label(s). Use a JSON array string for several labels, e.g.
+          '["self-hosted","linux"]'.
+        type: string
+        default: 'ubuntu-latest'
+      timeout-minutes:
+        description: 'Job timeout in minutes.'
+        type: number
+        default: 30
+      cache:
+        description: 'Cache the NuGet package folder between runs.'
+        type: boolean
+        default: true
+      run-tests:
+        description: 'Build and test the release branch before opening the pull request.'
+        type: boolean
+        default: true
+      restore-args:
+        description: 'Extra arguments appended to dotnet restore.'
+        type: string
+        default: ''
+      build-args:
+        description: 'Extra arguments appended to dotnet build.'
+        type: string
+        default: ''
+      test-args:
+        description: 'Extra arguments appended to dotnet test.'
+        type: string
+        default: '--verbosity normal'
+      nuget-feed-owner:
+        description: >-
+          GitHub Packages owner to authenticate against while restoring
+          (https://nuget.pkg.github.com/<owner>/index.json).
+          Empty = do not add a NuGet source.
+        type: string
+        default: ''
+      target-branch:
+        description: 'Branch the version bump is based on and tagged.'
+        type: string
+        default: 'main'
+      branch-prefix:
+        description: 'Prefix of the release branch, the version is appended to it.'
+        type: string
+        default: 'release/v'
+      tag-prefix:
+        description: 'Prefix of the release tag, the version is appended to it.'
+        type: string
+        default: 'v'
+      create-pr:
+        description: >-
+          Open a pull request for the release branch. When false the branch is
+          pushed and only the compare URL is printed.
+        type: boolean
+        default: true
+      pr-title:
+        description: 'Pull request title. Empty = "Creating release <tag>".'
+        type: string
+        default: ''
+      commit-author-name:
+        description: 'Git author name for the version bump and the tag.'
+        type: string
+        default: 'github-actions[bot]'
+      commit-author-email:
+        description: 'Git author email for the version bump and the tag.'
+        type: string
+        default: '41898282+github-actions[bot]@users.noreply.github.com'
+    secrets:
+      release-token:
+        description: >-
+          Token used for the push, the pull request and the tag. Defaults to
+          github.token. Needs contents and pull-requests write access.
+        required: false
+      nuget-token:
+        description: 'Token for the GitHub Packages feed. Defaults to github.token.'
+        required: false
+    outputs:
+      version:
+        description: 'The new (prepare) or tagged (tag) version.'
+        value: ${{ jobs.prepare.outputs.version || jobs.tag.outputs.version }}
+      branch:
+        description: 'Release branch created by the prepare half.'
+        value: ${{ jobs.prepare.outputs.branch }}
+      tag:
+        description: 'Release tag created by the tag half.'
+        value: ${{ jobs.tag.outputs.tag }}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare:
+    name: Bump version, build, test and open PR
+    if: >-
+      ${{ inputs.mode == 'prepare' ||
+      (inputs.mode == 'auto' && github.event_name == 'workflow_dispatch') }}
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    concurrency:
+      group: release-prepare-${{ github.repository }}
+      cancel-in-progress: false
+    outputs:
+      version: ${{ steps.version.outputs.new_version }}
+      branch: ${{ steps.version.outputs.branch }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Validate inputs
+        working-directory: .
+        env:
+          MODE: ${{ inputs.mode }}
+          VERSION_PART: ${{ inputs.version-part }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            auto|prepare|tag) ;;
+            *)
+              echo "::error title=Invalid mode::mode must be auto, prepare or tag (got '$MODE')."
+              exit 1
+              ;;
+          esac
+          part="${VERSION_PART,,}"
+          case "$part" in
+            patch|minor|major) ;;
+            *)
+              echo "::error title=Invalid version part::version-part must be patch, minor or major (got '$VERSION_PART')."
+              exit 1
+              ;;
+          esac
+
+      - name: Check out ${{ inputs.target-branch }}
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target-branch }}
+          token: ${{ secrets.release-token || github.token }}
+
+      - name: Set up .NET from global.json
+        if: ${{ inputs.global-json-file != '' }}
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: ${{ inputs.global-json-file }}
+
+      - name: Set up .NET
+        if: ${{ inputs.global-json-file == '' }}
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+
+      - name: Restore NuGet cache
+        if: ${{ inputs.cache }}
+        uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json', '**/Directory.Packages.props', '**/*.csproj', '**/global.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Add GitHub Packages NuGet source
+        if: ${{ inputs.nuget-feed-owner != '' }}
+        working-directory: .
+        env:
+          FEED_OWNER: ${{ inputs.nuget-feed-owner }}
+          FEED_USER: ${{ github.actor }}
+          FEED_TOKEN: ${{ secrets.nuget-token || github.token }}
+        run: |
+          set -euo pipefail
+          dotnet nuget add source \
+            --name github \
+            --username "$FEED_USER" \
+            --password "$FEED_TOKEN" \
+            --store-password-in-clear-text \
+            "https://nuget.pkg.github.com/${FEED_OWNER}/index.json"
+
+      - name: Resolve build target
+        id: resolve
+        env:
+          INPUT_SOLUTION: ${{ inputs.solution }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          target="$INPUT_SOLUTION"
+          if [[ -z "$target" ]]; then
+            target="$(find . -maxdepth 1 -type f \( -name '*.slnx' -o -name '*.sln' \) -print -quit)"
+            target="${target#./}"
+          fi
+          if [[ -z "$target" ]]; then
+            echo "::error title=No solution found::Set the 'solution' input or add a .sln/.slnx file to '$WORKING_DIRECTORY'."
+            exit 1
+          fi
+          echo "Building '$target'"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+
+      - name: Determine release version
+        id: version
+        working-directory: .
+        env:
+          VERSION_FILE: ${{ inputs.version-file }}
+          VERSION_PART: ${{ inputs.version-part }}
+          BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$VERSION_FILE" ]]; then
+            echo "::error title=Version file not found::'$VERSION_FILE' does not exist."
+            exit 1
+          fi
+          count="$(grep -o '<Version>' "$VERSION_FILE" | wc -l || true)"
+          if [[ "$count" -ne 1 ]]; then
+            echo "::error title=Ambiguous version::Expected exactly one <Version> element in '$VERSION_FILE', found $count."
+            exit 1
+          fi
+          current="$(sed -nE 's:.*<Version>([0-9]+\.[0-9]+\.[0-9]+)</Version>.*:\1:p' "$VERSION_FILE")"
+          if [[ -z "$current" ]]; then
+            echo "::error title=Invalid version::No <Version>x.y.z</Version> element found in '$VERSION_FILE'."
+            exit 1
+          fi
+
+          IFS=. read -r major minor patch <<< "$current"
+          part="${VERSION_PART,,}"
+          case "$part" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+
+          new_version="$major.$minor.$patch"
+          branch="${BRANCH_PREFIX}${new_version}"
+          tag="${TAG_PREFIX}${new_version}"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error title=Tag already exists::Tag '$tag' already exists on origin."
+            exit 1
+          fi
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            echo "::error title=Branch already exists::Branch '$branch' already exists on origin; delete it or use another version part."
+            exit 1
+          fi
+
+          echo "Current version: $current"
+          echo "Release version: $new_version on branch $branch (tag $tag)"
+          echo "current_version=$current" >> "$GITHUB_OUTPUT"
+          echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Create release branch and bump version
+        working-directory: .
+        env:
+          VERSION_FILE: ${{ inputs.version-file }}
+          BRANCH: ${{ steps.version.outputs.branch }}
+          NEW_VERSION: ${{ steps.version.outputs.new_version }}
+        run: |
+          set -euo pipefail
+          git switch -c "$BRANCH"
+          sed -i -E "s#(<Version>)[0-9]+\.[0-9]+\.[0-9]+(</Version>)#\1${NEW_VERSION}\2#" "$VERSION_FILE"
+          written="$(sed -nE 's:.*<Version>([0-9]+\.[0-9]+\.[0-9]+)</Version>.*:\1:p' "$VERSION_FILE")"
+          if [[ "$written" != "$NEW_VERSION" ]]; then
+            echo "::error title=Version bump failed::Expected '$NEW_VERSION' in '$VERSION_FILE', found '$written'."
+            exit 1
+          fi
+          git --no-pager diff -- "$VERSION_FILE"
+
+      - name: Restore dependencies
+        if: ${{ inputs.run-tests }}
+        env:
+          TARGET: ${{ steps.resolve.outputs.target }}
+          ARGS: ${{ inputs.restore-args }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+          dotnet restore "$TARGET" "${args[@]}"
+
+      - name: Build
+        if: ${{ inputs.run-tests }}
+        env:
+          TARGET: ${{ steps.resolve.outputs.target }}
+          CONFIGURATION: ${{ inputs.configuration }}
+          ARGS: ${{ inputs.build-args }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+          dotnet build "$TARGET" --no-restore --configuration "$CONFIGURATION" "${args[@]}"
+
+      - name: Test
+        if: ${{ inputs.run-tests }}
+        env:
+          TARGET: ${{ steps.resolve.outputs.target }}
+          CONFIGURATION: ${{ inputs.configuration }}
+          ARGS: ${{ inputs.test-args }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+          dotnet test "$TARGET" --no-build --configuration "$CONFIGURATION" "${args[@]}"
+
+      - name: Commit and push release branch
+        working-directory: .
+        env:
+          VERSION_FILE: ${{ inputs.version-file }}
+          BRANCH: ${{ steps.version.outputs.branch }}
+          TAG: ${{ steps.version.outputs.tag }}
+          AUTHOR_NAME: ${{ inputs.commit-author-name }}
+          AUTHOR_EMAIL: ${{ inputs.commit-author-email }}
+        run: |
+          set -euo pipefail
+          git config user.name "$AUTHOR_NAME"
+          git config user.email "$AUTHOR_EMAIL"
+          git add "$VERSION_FILE"
+          git commit -m "Increment version to $TAG"
+          git push --set-upstream origin "$BRANCH"
+
+      - name: Open release pull request
+        if: ${{ inputs.create-pr }}
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ secrets.release-token || github.token }}
+          BRANCH: ${{ steps.version.outputs.branch }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION_PART: ${{ inputs.version-part }}
+          TARGET_BRANCH: ${{ inputs.target-branch }}
+          VERSION_FILE: ${{ inputs.version-file }}
+          PR_TITLE: ${{ inputs.pr-title }}
+        run: |
+          set -euo pipefail
+          title="${PR_TITLE:-Creating release $TAG}"
+          body="$(cat <<EOF
+          This pull request increments the version in \`$VERSION_FILE\`.
+
+          - Version part: **$VERSION_PART**
+          - New version: **$TAG**
+          - Build and tests passed on the release branch.
+
+          Once merged, this workflow creates the tag \`$TAG\` on \`$TARGET_BRANCH\`.
+          EOF
+          )"
+          gh pr create \
+            --base "$TARGET_BRANCH" \
+            --head "$BRANCH" \
+            --title "$title" \
+            --body "$body"
+
+      - name: Report release branch
+        if: ${{ !inputs.create-pr }}
+        working-directory: .
+        env:
+          BRANCH: ${{ steps.version.outputs.branch }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          echo "Pushed \`$BRANCH\` for $TAG. Open the pull request at:"
+          echo "${{ github.server_url }}/${{ github.repository }}/compare/${{ inputs.target-branch }}...$BRANCH?expand=1"
+
+  tag:
+    name: Tag merged release
+    if: >-
+      ${{ inputs.mode == 'tag' ||
+      (inputs.mode == 'auto' && github.event_name == 'push' &&
+      github.ref_name == inputs.target-branch) }}
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 10
+    concurrency:
+      group: release-tag-${{ github.repository }}
+      cancel-in-progress: false
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      tag: ${{ steps.create_tag.outputs.tag }}
+    steps:
+      - name: Validate inputs
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            auto|prepare|tag) ;;
+            *)
+              echo "::error title=Invalid mode::mode must be auto, prepare or tag (got '$MODE')."
+              exit 1
+              ;;
+          esac
+
+      - name: Check out ${{ inputs.target-branch }}
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target-branch }}
+          fetch-depth: 0
+          token: ${{ secrets.release-token || github.token }}
+
+      - name: Read version
+        id: read
+        env:
+          VERSION_FILE: ${{ inputs.version-file }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$VERSION_FILE" ]]; then
+            echo "::error title=Version file not found::'$VERSION_FILE' does not exist."
+            exit 1
+          fi
+          count="$(grep -o '<Version>' "$VERSION_FILE" | wc -l || true)"
+          if [[ "$count" -ne 1 ]]; then
+            echo "::error title=Ambiguous version::Expected exactly one <Version> element in '$VERSION_FILE', found $count."
+            exit 1
+          fi
+          version="$(sed -nE 's:.*<Version>([0-9]+\.[0-9]+\.[0-9]+)</Version>.*:\1:p' "$VERSION_FILE")"
+          if [[ -z "$version" ]]; then
+            echo "::error title=Invalid version::No <Version>x.y.z</Version> element found in '$VERSION_FILE'."
+            exit 1
+          fi
+          tag="${TAG_PREFIX}${version}"
+          echo "Version in $VERSION_FILE: $version (tag $tag)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Create release tag
+        id: create_tag
+        env:
+          VERSION_FILE: ${{ inputs.version-file }}
+          TAG: ${{ steps.read.outputs.tag }}
+          AUTHOR_NAME: ${{ inputs.commit-author-name }}
+          AUTHOR_EMAIL: ${{ inputs.commit-author-email }}
+        run: |
+          set -euo pipefail
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists; nothing to do."
+            exit 0
+          fi
+
+          # Tag the commit that introduced the version instead of whatever is
+          # currently at the tip of the branch.
+          release_commit="$(git log -1 --format=%H -- "$VERSION_FILE")"
+          if [[ -z "$release_commit" ]]; then
+            echo "::error title=Commit not found::Could not find the commit that changed '$VERSION_FILE'."
+            exit 1
+          fi
+
+          git config user.name "$AUTHOR_NAME"
+          git config user.email "$AUTHOR_EMAIL"
+          git tag -a "$TAG" "$release_commit" -m "Release $TAG"
+          git push origin "$TAG"
+          echo "Created and pushed tag $TAG on $release_commit"

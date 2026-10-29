@@ -1,0 +1,258 @@
+# Reusable .NET CI pipeline: restore -> build -> test.
+#
+# Call it from any repository:
+#
+#   jobs:
+#     ci:
+#       permissions:
+#         contents: read
+#         packages: read          # only needed when nuget-feed-owner is set
+#       uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1
+#       with:
+#         solution: Source/MyApp.slnx
+#
+# Every input is optional. With no inputs at all the workflow builds the first
+# *.slnx or *.sln found in the repository root using the .NET 10 SDK.
+#
+# Runner requirement: the steps are bash, so runs-on must be Linux or macOS.
+# Full input/secret/output reference: README.md
+
+name: .NET CI Build
+
+on:
+  workflow_call:
+    inputs:
+      solution:
+        description: >-
+          Solution, project or directory to restore/build/test, relative to
+          working-directory. Empty = first *.slnx or *.sln in working-directory.
+        type: string
+        default: ''
+      working-directory:
+        description: 'Directory containing the solution.'
+        type: string
+        default: '.'
+      dotnet-version:
+        description: >-
+          .NET SDK version to install, e.g. "10.0.x" or "8.0.x,10.0.x".
+          Ignored when global-json-file is set.
+        type: string
+        default: '10.0.x'
+      global-json-file:
+        description: 'global.json to read the SDK version from. Overrides dotnet-version.'
+        type: string
+        default: ''
+      configuration:
+        description: 'Build configuration.'
+        type: string
+        default: 'Release'
+      runs-on:
+        description: >-
+          Runner label(s). Use a JSON array string for several labels, e.g.
+          '["self-hosted","linux"]'.
+        type: string
+        default: 'ubuntu-latest'
+      timeout-minutes:
+        description: 'Job timeout in minutes.'
+        type: number
+        default: 30
+      cache:
+        description: 'Cache the NuGet package folder between runs.'
+        type: boolean
+        default: true
+      run-tests:
+        description: 'Run dotnet test after the build.'
+        type: boolean
+        default: true
+      test-project:
+        description: 'Project or solution to test. Empty = the resolved build target.'
+        type: string
+        default: ''
+      restore-args:
+        description: 'Extra arguments appended to dotnet restore.'
+        type: string
+        default: ''
+      build-args:
+        description: 'Extra arguments appended to dotnet build.'
+        type: string
+        default: ''
+      test-args:
+        description: 'Extra arguments appended to dotnet test.'
+        type: string
+        default: '--verbosity normal'
+      upload-test-results:
+        description: 'Upload the .trx test results as an artifact.'
+        type: boolean
+        default: false
+      artifact-name:
+        description: 'Name of the test results artifact.'
+        type: string
+        default: 'test-results'
+      nuget-feed-owner:
+        description: >-
+          GitHub Packages owner to authenticate against
+          (https://nuget.pkg.github.com/<owner>/index.json).
+          Empty = do not add a NuGet source.
+        type: string
+        default: ''
+      set-commit-status:
+        description: >-
+          Post a legacy commit status after a successful build
+          (the "continuous-integration/github" style check).
+        type: boolean
+        default: false
+      status-context:
+        description: 'Commit status context used when set-commit-status is true.'
+        type: string
+        default: 'continuous-integration/github'
+    secrets:
+      nuget-token:
+        description: 'Token for the GitHub Packages feed. Defaults to github.token.'
+        required: false
+    outputs:
+      target:
+        description: 'Solution or project that was restored, built and tested.'
+        value: ${{ jobs.build.outputs.target }}
+
+permissions:
+  contents: read
+  packages: read
+  statuses: write # only used when set-commit-status is true
+
+jobs:
+  build:
+    name: Restore, build and test
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    outputs:
+      target: ${{ steps.resolve.outputs.target }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Set up .NET from global.json
+        if: ${{ inputs.global-json-file != '' }}
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: ${{ inputs.global-json-file }}
+
+      - name: Set up .NET
+        if: ${{ inputs.global-json-file == '' }}
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+
+      - name: Restore NuGet cache
+        if: ${{ inputs.cache }}
+        uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json', '**/Directory.Packages.props', '**/*.csproj', '**/global.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Add GitHub Packages NuGet source
+        if: ${{ inputs.nuget-feed-owner != '' }}
+        env:
+          FEED_OWNER: ${{ inputs.nuget-feed-owner }}
+          FEED_USER: ${{ github.actor }}
+          FEED_TOKEN: ${{ secrets.nuget-token || github.token }}
+        run: |
+          set -euo pipefail
+          dotnet nuget add source \
+            --name github \
+            --username "$FEED_USER" \
+            --password "$FEED_TOKEN" \
+            --store-password-in-clear-text \
+            "https://nuget.pkg.github.com/${FEED_OWNER}/index.json"
+
+      - name: Resolve build target
+        id: resolve
+        env:
+          INPUT_SOLUTION: ${{ inputs.solution }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          target="$INPUT_SOLUTION"
+          if [[ -z "$target" ]]; then
+            target="$(find . -maxdepth 1 -type f \( -name '*.slnx' -o -name '*.sln' \) -print -quit)"
+            target="${target#./}"
+          fi
+          if [[ -z "$target" ]]; then
+            echo "::error title=No solution found::Set the 'solution' input or add a .sln/.slnx file to '$WORKING_DIRECTORY'."
+            exit 1
+          fi
+          echo "Building '$target'"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+
+      - name: Restore dependencies
+        env:
+          TARGET: ${{ steps.resolve.outputs.target }}
+          ARGS: ${{ inputs.restore-args }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+          dotnet restore "$TARGET" "${args[@]}"
+
+      - name: Build
+        env:
+          TARGET: ${{ steps.resolve.outputs.target }}
+          CONFIGURATION: ${{ inputs.configuration }}
+          ARGS: ${{ inputs.build-args }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+          dotnet build "$TARGET" --no-restore --configuration "$CONFIGURATION" "${args[@]}"
+
+      - name: Test
+        if: ${{ inputs.run-tests }}
+        env:
+          TARGET: ${{ steps.resolve.outputs.target }}
+          TEST_PROJECT: ${{ inputs.test-project }}
+          CONFIGURATION: ${{ inputs.configuration }}
+          ARGS: ${{ inputs.test-args }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+          subject="${TEST_PROJECT:-$TARGET}"
+          dotnet test "$subject" \
+            --no-build \
+            --configuration "$CONFIGURATION" \
+            --logger "trx;LogFileName=results.trx" \
+            --results-directory artifacts/test-results \
+            "${args[@]}"
+
+      - name: Upload test results
+        if: ${{ inputs.upload-test-results && always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.working-directory }}/artifacts/test-results
+          if-no-files-found: ignore
+
+      - name: Set commit status
+        if: ${{ inputs.set-commit-status && success() }}
+        env:
+          STATUS_TOKEN: ${{ github.token }}
+          STATUS_CONTEXT: ${{ inputs.status-context }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          API_URL: ${{ github.api_url }}
+        run: |
+          set -euo pipefail
+          payload="$(jq -nc \
+            --arg url "$TARGET_URL" \
+            --arg context "$STATUS_CONTEXT" \
+            '{state: "success", target_url: $url, description: "The build succeeded!", context: $context}')"
+          curl --fail-with-body -sS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $STATUS_TOKEN" \
+            "$API_URL/repos/${REPOSITORY}/statuses/${COMMIT_SHA}" \
+            -d "$payload"
