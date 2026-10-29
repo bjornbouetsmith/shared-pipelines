@@ -64,7 +64,9 @@ reference in your callers when you want a newer release.
   features it never uses, so grant exactly what you need in the calling job.
   The tables below list the requirement per feature.
 - **Secrets are not inherited implicitly:** pass them explicitly, or use
-  `secrets: inherit`.
+  `secrets: inherit`. `inherit` forwards secrets under their *own* names, so a
+  repository secret called `SONAR_TOKEN` will not fill the `sonar-token`
+  input — map it: `secrets: { sonar-token: <repo secret> }`.
 
 ---
 
@@ -121,7 +123,7 @@ jobs:
 | Secret | Required | Description |
 |---|---|---|
 | `nuget-token` | no | Token for the GitHub Packages feed. Defaults to `github.token`. |
-| `sonar-token` | when `sonar: true` | SonarQube/SonarCloud token. |
+| `sonar-token` | when `sonar: true` | SonarQube/SonarCloud token. Name the repository secret `sonar-token` to use `secrets: inherit`, or map another name explicitly. |
 
 ### Outputs
 
@@ -163,8 +165,12 @@ jobs:
         /p:AltCoverReport=/home/runner/work/MyApp/MyApp/Source/MyApp.Tests/coverage.opencover.xml
         /p:AltCoverAttributeFilter=ExcludeFromCodeCoverage
         /p:AltCoverVisibleBranches=true
-    secrets: inherit
+    secrets:
+      sonar-token: ${{ secrets.SONAR_TOKEN }}   # name on the left, repo secret on the right
 ```
+
+`secrets: inherit` also works, but only if the repository secret is itself
+named `sonar-token`.
 
 What the option changes:
 
@@ -193,6 +199,10 @@ Notes:
 - The status calls need `statuses: write`. On `pull_request` events from forks
   the token is read-only, so those calls fail there; run the pipeline on
   same-repository branches or pass a PAT-based token instead.
+- The statuses are posted on `github.sha`, which on a `pull_request` event is the
+  PR *merge* commit rather than the head commit. That mirrors the original
+  pipeline; if you want the checks to gate branch protection on the PR head, run
+  the pipeline on `push` as well.
 
 ---
 

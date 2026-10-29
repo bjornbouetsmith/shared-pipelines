@@ -268,7 +268,7 @@ jobs:
             missing=1
           fi
           if [[ -z "$SONAR_TOKEN" ]]; then
-            echo "::error title=sonar-token missing::The 'sonar' input is enabled but the 'sonar-token' secret is empty. Add it to the calling repository and pass it with 'secrets: inherit'."
+            echo "::error title=sonar-token missing::The 'sonar' input is enabled but the 'sonar-token' secret is empty. Add the token to the calling repository and pass it as the sonar-token secret. 'secrets: inherit' only forwards secrets under their own names, so a secret called SONAR_TOKEN has to be mapped explicitly."
             missing=1
           fi
           if (( missing != 0 )); then
