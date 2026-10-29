@@ -1,0 +1,378 @@
+# Reusable .NET release pipeline: restore -> build -> test -> pack -> publish.
+#
+# Call it from any repository:
+#
+#   jobs:
+#     release:
+#       permissions:
+#         contents: read
+#         packages: write    # required to push to GitHub Packages
+#         id-token: write    # required for nuget.org OIDC login
+#       uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1
+#       with:
+#         solution: Source/MyApp.slnx
+#         publish-nuget-org: true
+#         nuget-org-user: my-nuget-account
+#
+# By default the workflow packs every packable project in the solution and
+# pushes the packages to GitHub Packages of github.repository_owner.
+# nuget.org publishing is opt-in and uses OIDC (no long-lived API key needed).
+#
+# Runner requirement: the steps are bash, so runs-on must be Linux or macOS.
+# Full input/secret/output reference: README.md
+
+name: Release NuGet
+
+on:
+  workflow_call:
+    inputs:
+      solution:
+        description: >-
+          Solution, project or directory to restore/build/test/pack, relative to
+          working-directory. Empty = first *.slnx or *.sln in working-directory.
+        type: string
+        default: ''
+      working-directory:
+        description: 'Directory containing the solution.'
+        type: string
+        default: '.'
+      dotnet-version:
+        description: >-
+          .NET SDK version to install, e.g. "10.0.x".
+          Ignored when global-json-file is set.
+        type: string
+        default: '10.0.x'
+      global-json-file:
+        description: 'global.json to read the SDK version from. Overrides dotnet-version.'
+        type: string
+        default: ''
+      configuration:
+        description: 'Build configuration used for build, test and pack.'
+        type: string
+        default: 'Release'
+      runs-on:
+        description: >-
+          Runner label(s). Use a JSON array string for several labels, e.g.
+          '["self-hosted","linux"]'.
+        type: string
+        default: 'ubuntu-latest'
+      timeout-minutes:
+        description: 'Job timeout in minutes.'
+        type: number
+        default: 45
+      cache:
+        description: 'Cache the NuGet package folder between runs.'
+        type: boolean
+        default: true
+      run-tests:
+        description: 'Run dotnet test before packing.'
+        type: boolean
+        default: true
+      test-project:
+        description: 'Project or solution to test. Empty = the resolved build target.'
+        type: string
+        default: ''
+      restore-args:
+        description: 'Extra arguments appended to dotnet restore.'
+        type: string
+        default: ''
+      build-args:
+        description: 'Extra arguments appended to dotnet build.'
+        type: string
+        default: ''
+      test-args:
+        description: 'Extra arguments appended to dotnet test.'
+        type: string
+        default: '--verbosity normal'
+      pack-args:
+        description: 'Extra arguments appended to dotnet pack.'
+        type: string
+        default: ''
+      packages-directory:
+        description: 'Directory the .nupkg files are packed into.'
+        type: string
+        default: 'artifacts/packages'
+      upload-packages-artifact:
+        description: 'Upload the packed .nupkg files as a workflow artifact.'
+        type: boolean
+        default: true
+      artifact-name:
+        description: 'Name of the packages artifact.'
+        type: string
+        default: 'nuget-packages'
+      allowed-actors:
+        description: >-
+          Comma separated list of users allowed to run this pipeline, e.g.
+          "alice,bob". Empty = allow anyone who can trigger the caller workflow.
+        type: string
+        default: ''
+      nuget-feed-owner:
+        description: >-
+          Owner of the GitHub Packages feed to push to
+          (https://nuget.pkg.github.com/<owner>/index.json).
+          Empty = github.repository_owner.
+        type: string
+        default: ''
+      publish-github-packages:
+        description: 'Push the packed .nupkg files to GitHub Packages.'
+        type: boolean
+        default: true
+      publish-nuget-org:
+        description: 'Push the packed .nupkg files to nuget.org.'
+        type: boolean
+        default: false
+      nuget-org-user:
+        description: 'nuget.org profile name, required for the OIDC login.'
+        type: string
+        default: ''
+      nuget-org-source:
+        description: 'nuget.org v3 feed to push to.'
+        type: string
+        default: 'https://api.nuget.org/v3/index.json'
+      push-args:
+        description: 'Extra arguments appended to every dotnet nuget push.'
+        type: string
+        default: '--skip-duplicate'
+    secrets:
+      nuget-token:
+        description: 'Token used to push to GitHub Packages. Defaults to github.token.'
+        required: false
+      nuget-org-api-key:
+        description: >-
+          Classic nuget.org API key. Optional: when empty, the workflow logs in
+          through OIDC and uses the short-lived key it receives.
+        required: false
+    outputs:
+      packages_path:
+        description: 'Directory containing the packed .nupkg files.'
+        value: ${{ jobs.release.outputs.packages_path }}
+
+# No `permissions:` block on purpose. A called workflow can only reduce the
+# caller's GITHUB_TOKEN permissions, and asking for a scope the caller did not
+# grant fails the whole run at startup with
+# "The workflow is requesting '<scope>', but is only allowed 'none'".
+# Declaring the minimum here would force every caller to grant `id-token: write`
+# even when publish-nuget-org is off.
+# Grant the scopes you need in the calling job; see README.md.
+jobs:
+  release:
+    name: Build, test and publish
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    outputs:
+      packages_path: ${{ steps.pack.outputs.packages_path }}
+    env:
+      PACKAGES_DIR: ${{ inputs.packages-directory }}
+      NUGET_ORG_API_KEY: ${{ secrets.nuget-org-api-key }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Validate triggering actor
+        if: ${{ inputs.allowed-actors != '' }}
+        env:
+          ALLOWED: ${{ inputs.allowed-actors }}
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+          IFS=',' read -r -a allowed <<< "$ALLOWED"
+          for candidate in "${allowed[@]}"; do
+            candidate="${candidate#"${candidate%%[![:space:]]*}"}"
+            candidate="${candidate%"${candidate##*[![:space:]]}"}"
+            if [[ "$candidate" == "$ACTOR" ]]; then
+              echo "Actor '$ACTOR' is allowed to publish."
+              exit 0
+            fi
+          done
+          echo "::error title=Actor not allowed::$ACTOR may not run this release. Allowed: $ALLOWED"
+          exit 1
+
+      - name: Validate inputs
+        env:
+          PUBLISH_NUGET_ORG: ${{ inputs.publish-nuget-org }}
+          NUGET_ORG_USER: ${{ inputs.nuget-org-user }}
+          PUBLISH_GITHUB_PACKAGES: ${{ inputs.publish-github-packages }}
+        run: |
+          set -euo pipefail
+          if [[ "$PUBLISH_NUGET_ORG" != "true" && "$PUBLISH_GITHUB_PACKAGES" != "true" ]]; then
+            echo "::error title=Nothing to publish::Both publish-github-packages and publish-nuget-org are false."
+            exit 1
+          fi
+          if [[ "$PUBLISH_NUGET_ORG" == "true" && -z "$NUGET_ORG_USER" && -z "$NUGET_ORG_API_KEY" ]]; then
+            echo "::error title=nuget.org credentials missing::Set the 'nuget-org-user' input (for OIDC) or the 'nuget-org-api-key' secret."
+            exit 1
+          fi
+
+      - name: Set up .NET from global.json
+        if: ${{ inputs.global-json-file != '' }}
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: ${{ inputs.global-json-file }}
+
+      - name: Set up .NET
+        if: ${{ inputs.global-json-file == '' }}
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+
+      - name: Restore NuGet cache
+        if: ${{ inputs.cache }}
+        uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json', '**/Directory.Packages.props', '**/*.csproj', '**/global.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Add NuGet sources
+        env:
+          FEED_OWNER: ${{ inputs.nuget-feed-owner || github.repository_owner }}
+          FEED_USER: ${{ github.actor }}
+          FEED_TOKEN: ${{ secrets.nuget-token || github.token }}
+        run: |
+          set -euo pipefail
+          dotnet nuget add source \
+            --name github \
+            --username "$FEED_USER" \
+            --password "$FEED_TOKEN" \
+            --store-password-in-clear-text \
+            "https://nuget.pkg.github.com/${FEED_OWNER}/index.json"
+
+      - name: Resolve build target
+        id: resolve
+        env:
+          INPUT_SOLUTION: ${{ inputs.solution }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          target="$INPUT_SOLUTION"
+          if [[ -z "$target" ]]; then
+            target="$(find . -maxdepth 1 -type f \( -name '*.slnx' -o -name '*.sln' \) -print -quit)"
+            target="${target#./}"
+          fi
+          if [[ -z "$target" ]]; then
+            echo "::error title=No solution found::Set the 'solution' input or add a .sln/.slnx file to '$WORKING_DIRECTORY'."
+            exit 1
+          fi
+          echo "Building '$target'"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+
+      - name: Restore dependencies
+        env:
+          TARGET: ${{ steps.resolve.outputs.target }}
+          ARGS: ${{ inputs.restore-args }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+          dotnet restore "$TARGET" "${args[@]}"
+
+      - name: Build
+        env:
+          TARGET: ${{ steps.resolve.outputs.target }}
+          CONFIGURATION: ${{ inputs.configuration }}
+          ARGS: ${{ inputs.build-args }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+          dotnet build "$TARGET" --no-restore --configuration "$CONFIGURATION" "${args[@]}"
+
+      - name: Test
+        if: ${{ inputs.run-tests }}
+        env:
+          TARGET: ${{ steps.resolve.outputs.target }}
+          TEST_PROJECT: ${{ inputs.test-project }}
+          CONFIGURATION: ${{ inputs.configuration }}
+          ARGS: ${{ inputs.test-args }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+          subject="${TEST_PROJECT:-$TARGET}"
+          dotnet test "$subject" --no-build --configuration "$CONFIGURATION" "${args[@]}"
+
+      - name: Pack
+        id: pack
+        env:
+          TARGET: ${{ steps.resolve.outputs.target }}
+          CONFIGURATION: ${{ inputs.configuration }}
+          ARGS: ${{ inputs.pack-args }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+          rm -rf "$PACKAGES_DIR"
+          dotnet pack "$TARGET" \
+            --no-build \
+            --configuration "$CONFIGURATION" \
+            --output "$PACKAGES_DIR" \
+            "${args[@]}"
+
+          mapfile -t packages < <(find "$PACKAGES_DIR" -maxdepth 1 -name '*.nupkg' -print | sort)
+          if (( ${#packages[@]} == 0 )); then
+            echo "::error title=No packages packed::Nothing was produced in '$PACKAGES_DIR'. Check that the projects are packable (IsPackable=true) and have a <Version>."
+            exit 1
+          fi
+          echo "Packed ${#packages[@]} package(s):"
+          printf '  %s\n' "${packages[@]##*/}"
+          echo "packages_path=$PACKAGES_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Upload packages
+        if: ${{ inputs.upload-packages-artifact && success() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.working-directory }}/${{ inputs.packages-directory }}
+          if-no-files-found: error
+
+      - name: NuGet login (OIDC)
+        id: nuget-login
+        if: ${{ inputs.publish-nuget-org && inputs.nuget-org-user != '' && env.NUGET_ORG_API_KEY == '' }}
+        uses: NuGet/login@v1
+        with:
+          user: ${{ inputs.nuget-org-user }}
+
+      - name: Publish to GitHub Packages
+        if: ${{ inputs.publish-github-packages }}
+        env:
+          PUSH_TOKEN: ${{ secrets.nuget-token || github.token }}
+          ARGS: ${{ inputs.push-args }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+          mapfile -t packages < <(find "$PACKAGES_DIR" -maxdepth 1 -name '*.nupkg' -print | sort)
+          for package in "${packages[@]}"; do
+            echo "Pushing ${package##*/} to GitHub Packages"
+            dotnet nuget push "$package" \
+              --api-key "$PUSH_TOKEN" \
+              --source github \
+              "${args[@]}"
+          done
+
+      - name: Publish to nuget.org
+        if: ${{ inputs.publish-nuget-org }}
+        env:
+          SOURCE: ${{ inputs.nuget-org-source }}
+          PUSH_TOKEN: ${{ secrets.nuget-org-api-key || steps.nuget-login.outputs.NUGET_API_KEY }}
+          ARGS: ${{ inputs.push-args }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$PUSH_TOKEN" ]]; then
+            echo "::error title=nuget.org credentials missing::Neither the 'nuget-org-api-key' secret nor an OIDC login produced an API key."
+            exit 1
+          fi
+          args=()
+          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+          mapfile -t packages < <(find "$PACKAGES_DIR" -maxdepth 1 -name '*.nupkg' -print | sort)
+          for package in "${packages[@]}"; do
+            echo "Pushing ${package##*/} to $SOURCE"
+            dotnet nuget push "$package" \
+              --api-key "$PUSH_TOKEN" \
+              --source "$SOURCE" \
+              "${args[@]}"
+          done
