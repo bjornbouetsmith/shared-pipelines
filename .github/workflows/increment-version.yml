@@ -550,21 +550,28 @@ jobs:
             --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{tag: $tag, message: $message, object: $object, type: "commit",
               tagger: {name: $name, email: $email, date: $date}}')"
-          tag_sha="$(curl --fail-with-body -sS -X POST \
+          tag_body="$(mktemp)"
+          tag_code="$(curl -sS -o "$tag_body" -w '%{http_code}' -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $RELEASE_TOKEN" \
             "$API_URL/repos/${REPOSITORY}/git/tags" \
-            -d "$tag_payload" | jq -r '.sha // empty')"
-          if [[ -z "$tag_sha" ]]; then
-            echo "::error title=Tag creation failed::The API did not return a tag object for '$TAG'."
+            -d "$tag_payload")"
+          tag_sha="$(jq -r '.sha // empty' < "$tag_body")"
+          if [[ "$tag_code" != "201" || -z "$tag_sha" ]]; then
+            echo "::error title=Tag creation failed::POST /git/tags returned HTTP $tag_code: $(cat "$tag_body")"
             exit 1
           fi
 
           ref_payload="$(jq -nc --arg ref "refs/tags/$TAG" --arg sha "$tag_sha" \
             '{ref: $ref, sha: $sha}')"
-          curl --fail-with-body -sS -X POST \
+          ref_body="$(mktemp)"
+          ref_code="$(curl -sS -o "$ref_body" -w '%{http_code}' -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $RELEASE_TOKEN" \
             "$API_URL/repos/${REPOSITORY}/git/refs" \
-            -d "$ref_payload" > /dev/null
+            -d "$ref_payload")"
+          if [[ "$ref_code" != "201" ]]; then
+            echo "::error title=Tag creation failed::POST /git/refs returned HTTP $ref_code: $(cat "$ref_body")"
+            exit 1
+          fi
           echo "Created and pushed tag $TAG on $release_commit"
