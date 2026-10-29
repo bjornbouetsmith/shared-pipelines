@@ -570,6 +570,10 @@ jobs:
             -H "Authorization: Bearer $RELEASE_TOKEN" \
             "$API_URL/repos/${REPOSITORY}/git/refs" \
             -d "$ref_payload")"
+          if [[ "$ref_code" == "403" && "$(cat "$ref_body")" == *"Resource not accessible by integration"* ]]; then
+            echo "::error title=Tag creation refused::GitHub refused to create refs/tags/$TAG. This is what an App token without the 'workflows' permission gets when the tagged commit adds a workflow file, and GITHUB_TOKEN can never hold that permission. Pass a PAT or GitHub App token that has it as 'release-token', or tag a commit that does not add .github/workflows files."
+            exit 1
+          fi
           if [[ "$ref_code" != "201" ]]; then
             echo "::error title=Tag creation failed::POST /git/refs returned HTTP $ref_code: $(cat "$ref_body")"
             exit 1
