@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   build:
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.1.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.2.0
 ```
 
 That is a complete pipeline: it finds the first `*.slnx` or `*.sln` in the
@@ -38,7 +38,7 @@ repository root, installs the .NET 10 SDK, restores, builds and tests it.
 
 | Reference | Behaviour |
 |---|---|
-| `@v1.1.0` | Exact release — **recommended**. Nothing changes under your feet. |
+| `@v1.2.0` | Exact release — **recommended**. Nothing changes under your feet. |
 | `@<sha>` | Fully immutable, best for audited environments. |
 | `@main` | Bleeding edge, every commit here lands in every consumer immediately. Not recommended. |
 
@@ -47,6 +47,7 @@ reference in your callers when you want a newer release.
 
 | Release | Highlights |
 |---|---|
+| `v1.2.0` | Shared composite actions for checkout, SDK/cache setup, restore, build, test, Sonar and commit statuses; no workflow input changes |
 | `v1.1.0` | SonarQube/SonarCloud option, pending/success/failure commit statuses |
 | `v1.0.0` | First release: reusable CI, release and versioning workflows |
 
@@ -70,6 +71,31 @@ reference in your callers when you want a newer release.
 
 ---
 
+## Shared composite actions
+
+The three reusable workflows are the first consumers of the composite actions in
+[`.github/actions`](.github/actions). They are implementation details of the
+workflows, not additional public entry points, but listing them makes the
+structure easy to follow:
+
+| Action | Used for |
+|---|---|
+| [`checkout`](.github/actions/checkout/action.yml) | Checking out the caller repository, optionally with full history and a release token. |
+| [`setup-dotnet`](.github/actions/setup-dotnet/action.yml) | Installing the .NET SDK, caching `~/.nuget/packages` and adding the GitHub Packages source. |
+| [`restore`](.github/actions/restore/action.yml) | Resolving the solution and running `dotnet restore`. |
+| [`build`](.github/actions/build/action.yml) | Running `dotnet build --no-restore`. |
+| [`test`](.github/actions/test/action.yml) | Running `dotnet test --no-build`, with optional TRX logging. |
+| [`sonar`](.github/actions/sonar/action.yml) | The `setup`, `begin` and `end` phases of a SonarQube/SonarCloud analysis. |
+| [`commit-status`](.github/actions/commit-status/action.yml) | Posting one pending/success/failure commit status. |
+| [`version`](.github/actions/version/action.yml) | Reading or incrementing the `<Version>` element and computing the release branch/tag. |
+| [`validate-version-inputs`](.github/actions/validate-version-inputs/action.yml) | Validating `mode` and `version-part`. |
+
+They are referenced by full repository path and pinned to the same `vX.Y.Z` tag
+as the workflows, because a local `./.github/actions/...` reference inside a
+reusable workflow would resolve against the caller's checkout.
+
+---
+
 ## `dotnet-ci-build.yml`
 
 ```yaml
@@ -78,7 +104,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.1.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.2.0
     with:
       solution: Source/MyApp.slnx
       nuget-feed-owner: my-github-user
@@ -152,7 +178,7 @@ jobs:
       contents: read
       packages: read
       statuses: write            # only for the commit status options
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.1.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.2.0
     with:
       solution: Source/MyApp.slnx
       sonar: true
@@ -215,7 +241,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.1.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.2.0
     with:
       solution: Source/MyApp.slnx
       allowed-actors: my-github-user
@@ -311,7 +337,7 @@ permissions:
 
 jobs:
   release:
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/increment-version.yml@v1.1.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/increment-version.yml@v1.2.0
     with:
       version-part: ${{ inputs.version_part || 'patch' }}
     secrets: inherit
