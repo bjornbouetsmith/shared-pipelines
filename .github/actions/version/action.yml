@@ -64,7 +64,6 @@ runs:
     - name: Read version
       id: read
       shell: bash
-      working-directory: .
       env:
         VERSION_FILE: ${{ inputs.version-file }}
         TAG_PREFIX: ${{ inputs.tag-prefix }}
@@ -94,7 +93,6 @@ runs:
       id: increment
       if: ${{ inputs.operation == 'increment' }}
       shell: bash
-      working-directory: .
       env:
         VERSION_FILE: ${{ inputs.version-file }}
         VERSION_PART: ${{ inputs.version-part }}
