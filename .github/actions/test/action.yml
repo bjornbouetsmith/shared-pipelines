@@ -1,6 +1,6 @@
 # Test a target that has already been built.
 #
-# Code coverage is collected using altcover and written to coverage.opencover*.xml in the root of GitHub workspace.
+# Code coverage is collected using altcover and written to coverage.opencover.xml in the root of GitHub workspace.
 name: Test .NET target
 description: Test a target that has already been built with code coverage using altcover.
 
@@ -46,7 +46,7 @@ runs:
           --configuration "$CONFIGURATION" \
           --verbosity normal \
           /p:AltCover=true \
-          /p:AltCoverReport="$GITHUB_WORKSPACE/coverage.opencover*.xml" \
+          /p:AltCoverReport="$GITHUB_WORKSPACE/coverage.opencover.xml" \
           /p:AltCoverAttributeFilter=ExcludeFromCodeCoverage \
           /p:AltCoverVisibleBranches=true)
         command+=("${args[@]}")

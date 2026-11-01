@@ -278,7 +278,7 @@ jobs:
 
       - name: Test
         if: ${{ inputs.run-tests }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/test@v1.3.1
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/test@v1.3.2
         with:
           target: ${{ steps.restore.outputs.target }}
           test-project: ${{ inputs.test-project }}
