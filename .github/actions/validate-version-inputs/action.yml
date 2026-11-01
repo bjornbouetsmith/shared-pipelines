@@ -1,0 +1,46 @@
+# Validate the inputs shared by the prepare and tag jobs of increment-version.
+name: Validate version inputs
+description: Validate the mode and version part used by the versioning workflow.
+
+inputs:
+  mode:
+    description: 'auto, prepare or tag.'
+    required: true
+  version-part:
+    description: 'patch, minor or major.'
+    required: true
+  validate-version-part:
+    description: >-
+      Validate version-part as well as mode. The tag half does not use
+      version-part, so it keeps the original behaviour of ignoring it.
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Validate inputs
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        VERSION_PART: ${{ inputs.version-part }}
+        VALIDATE_VERSION_PART: ${{ inputs.validate-version-part }}
+      run: |
+        set -euo pipefail
+        case "$MODE" in
+          auto|prepare|tag) ;;
+          *)
+            echo "::error title=Invalid mode::mode must be auto, prepare or tag (got '$MODE')."
+            exit 1
+            ;;
+        esac
+        if [[ "$VALIDATE_VERSION_PART" == "true" ]]; then
+          part="${VERSION_PART,,}"
+          case "$part" in
+            patch|minor|major) ;;
+            *)
+              echo "::error title=Invalid version part::version-part must be patch, minor or major (got '$VERSION_PART')."
+              exit 1
+              ;;
+          esac
+        fi

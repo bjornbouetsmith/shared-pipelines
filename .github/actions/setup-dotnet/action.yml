@@ -1,0 +1,71 @@
+# Install the .NET SDK, restore the NuGet cache and optionally add the GitHub
+# Packages feed.
+#
+# Kept in one action because the three reusable workflows always need the same
+# three things before they can restore anything.
+name: Set up .NET and NuGet
+description: Install the .NET SDK, restore the NuGet cache and optionally add the GitHub Packages feed.
+
+inputs:
+  dotnet-version:
+    description: '.NET SDK version to install, e.g. "10.0.x" or "8.0.x,10.0.x".'
+    required: false
+    default: '10.0.x'
+  global-json-file:
+    description: 'global.json to read the SDK version from. Overrides dotnet-version.'
+    required: false
+    default: ''
+  cache:
+    description: 'Cache the NuGet package folder between runs ("true" or "false").'
+    required: false
+    default: 'true'
+  nuget-feed-owner:
+    description: >-
+      GitHub Packages owner to add as the "github" NuGet source
+      (https://nuget.pkg.github.com/<owner>/index.json). Empty = do not add it.
+    required: false
+    default: ''
+  nuget-token:
+    description: 'Token for the GitHub Packages feed. Empty = github.token.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Set up .NET from global.json
+      if: ${{ inputs.global-json-file != '' }}
+      uses: actions/setup-dotnet@v6
+      with:
+        global-json-file: ${{ inputs.global-json-file }}
+
+    - name: Set up .NET
+      if: ${{ inputs.global-json-file == '' }}
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+
+    - name: Restore NuGet cache
+      if: ${{ inputs.cache == 'true' }}
+      uses: actions/cache@v6
+      with:
+        path: ~/.nuget/packages
+        key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json', '**/Directory.Packages.props', '**/*.csproj', '**/global.json') }}
+        restore-keys: |
+          ${{ runner.os }}-nuget-
+
+    - name: Add GitHub Packages NuGet source
+      if: ${{ inputs.nuget-feed-owner != '' }}
+      shell: bash
+      env:
+        FEED_OWNER: ${{ inputs.nuget-feed-owner }}
+        FEED_USER: ${{ github.actor }}
+        FEED_TOKEN: ${{ inputs.nuget-token || github.token }}
+      run: |
+        set -euo pipefail
+        dotnet nuget add source \
+          --name github \
+          --username "$FEED_USER" \
+          --password "$FEED_TOKEN" \
+          --store-password-in-clear-text \
+          "https://nuget.pkg.github.com/${FEED_OWNER}/index.json"

@@ -169,7 +169,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
     steps:
       - name: Check out
-        uses: actions/checkout@v7
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/checkout@feat/shared-composite-actions
 
       - name: Validate triggering actor
         if: ${{ inputs.allowed-actors != '' }}
@@ -206,99 +206,45 @@ jobs:
             exit 1
           fi
 
-      - name: Set up .NET from global.json
-        if: ${{ inputs.global-json-file != '' }}
-        uses: actions/setup-dotnet@v6
-        with:
-          global-json-file: ${{ inputs.global-json-file }}
-
-      - name: Set up .NET
-        if: ${{ inputs.global-json-file == '' }}
-        uses: actions/setup-dotnet@v6
+      - name: Set up .NET and NuGet
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/setup-dotnet@feat/shared-composite-actions
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
-
-      - name: Restore NuGet cache
-        if: ${{ inputs.cache }}
-        uses: actions/cache@v6
-        with:
-          path: ~/.nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json', '**/Directory.Packages.props', '**/*.csproj', '**/global.json') }}
-          restore-keys: |
-            ${{ runner.os }}-nuget-
-
-      - name: Add NuGet sources
-        env:
-          FEED_OWNER: ${{ inputs.nuget-feed-owner || github.repository_owner }}
-          FEED_USER: ${{ github.actor }}
-          FEED_TOKEN: ${{ secrets.nuget-token || github.token }}
-        run: |
-          set -euo pipefail
-          dotnet nuget add source \
-            --name github \
-            --username "$FEED_USER" \
-            --password "$FEED_TOKEN" \
-            --store-password-in-clear-text \
-            "https://nuget.pkg.github.com/${FEED_OWNER}/index.json"
-
-      - name: Resolve build target
-        id: resolve
-        env:
-          INPUT_SOLUTION: ${{ inputs.solution }}
-          WORKING_DIRECTORY: ${{ inputs.working-directory }}
-        run: |
-          set -euo pipefail
-          target="$INPUT_SOLUTION"
-          if [[ -z "$target" ]]; then
-            target="$(find . -maxdepth 1 -type f \( -name '*.slnx' -o -name '*.sln' \) -print -quit)"
-            target="${target#./}"
-          fi
-          if [[ -z "$target" ]]; then
-            echo "::error title=No solution found::Set the 'solution' input or add a .sln/.slnx file to '$WORKING_DIRECTORY'."
-            exit 1
-          fi
-          echo "Building '$target'"
-          echo "target=$target" >> "$GITHUB_OUTPUT"
+          global-json-file: ${{ inputs.global-json-file }}
+          cache: ${{ inputs.cache }}
+          nuget-feed-owner: ${{ inputs.nuget-feed-owner || github.repository_owner }}
+          nuget-token: ${{ secrets.nuget-token }}
 
       - name: Restore dependencies
-        env:
-          TARGET: ${{ steps.resolve.outputs.target }}
-          ARGS: ${{ inputs.restore-args }}
-        run: |
-          set -euo pipefail
-          args=()
-          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
-          dotnet restore "$TARGET" "${args[@]}"
+        id: restore
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/restore@feat/shared-composite-actions
+        with:
+          solution: ${{ inputs.solution }}
+          working-directory: ${{ inputs.working-directory }}
+          restore-args: ${{ inputs.restore-args }}
 
       - name: Build
-        env:
-          TARGET: ${{ steps.resolve.outputs.target }}
-          CONFIGURATION: ${{ inputs.configuration }}
-          ARGS: ${{ inputs.build-args }}
-        run: |
-          set -euo pipefail
-          args=()
-          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
-          dotnet build "$TARGET" --no-restore --configuration "$CONFIGURATION" "${args[@]}"
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/build@feat/shared-composite-actions
+        with:
+          target: ${{ steps.restore.outputs.target }}
+          working-directory: ${{ inputs.working-directory }}
+          configuration: ${{ inputs.configuration }}
+          build-args: ${{ inputs.build-args }}
 
       - name: Test
         if: ${{ inputs.run-tests }}
-        env:
-          TARGET: ${{ steps.resolve.outputs.target }}
-          TEST_PROJECT: ${{ inputs.test-project }}
-          CONFIGURATION: ${{ inputs.configuration }}
-          ARGS: ${{ inputs.test-args }}
-        run: |
-          set -euo pipefail
-          args=()
-          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
-          subject="${TEST_PROJECT:-$TARGET}"
-          dotnet test "$subject" --no-build --configuration "$CONFIGURATION" "${args[@]}"
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/test@feat/shared-composite-actions
+        with:
+          target: ${{ steps.restore.outputs.target }}
+          test-project: ${{ inputs.test-project }}
+          working-directory: ${{ inputs.working-directory }}
+          configuration: ${{ inputs.configuration }}
+          test-args: ${{ inputs.test-args }}
 
       - name: Pack
         id: pack
         env:
-          TARGET: ${{ steps.resolve.outputs.target }}
+          TARGET: ${{ steps.restore.outputs.target }}
           CONFIGURATION: ${{ inputs.configuration }}
           ARGS: ${{ inputs.pack-args }}
         run: |

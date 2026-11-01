@@ -1,0 +1,36 @@
+# Build a target that has already been restored.
+name: Build .NET target
+description: Build a target that has already been restored.
+
+inputs:
+  target:
+    description: 'Solution or project to build.'
+    required: true
+  working-directory:
+    description: 'Directory containing the solution.'
+    required: false
+    default: '.'
+  configuration:
+    description: 'Build configuration.'
+    required: false
+    default: 'Release'
+  build-args:
+    description: 'Extra arguments appended to dotnet build.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Build
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TARGET: ${{ inputs.target }}
+        CONFIGURATION: ${{ inputs.configuration }}
+        ARGS: ${{ inputs.build-args }}
+      run: |
+        set -euo pipefail
+        args=()
+        if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+        dotnet build "$TARGET" --no-restore --configuration "$CONFIGURATION" "${args[@]}"

@@ -1,0 +1,31 @@
+# Check out the calling repository.
+#
+# This is a composite action so the three reusable workflows share one checkout
+# definition (including the full-history and release-token variants). It always
+# checks out the caller, because the github context belongs to the caller.
+name: Checkout caller repository
+description: Check out the repository that called the reusable workflow.
+
+inputs:
+  ref:
+    description: 'Branch, tag or SHA to check out. Empty = the triggering ref.'
+    required: false
+    default: ''
+  full-history:
+    description: 'Fetch the entire history (needed for Sonar blame and new-code detection).'
+    required: false
+    default: 'false'
+  token:
+    description: 'Token used by actions/checkout. Empty = github.token.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Check out
+      uses: actions/checkout@v7
+      with:
+        ref: ${{ inputs.ref }}
+        fetch-depth: ${{ inputs.full-history == 'true' && '0' || '1' }}
+        token: ${{ inputs.token || github.token }}

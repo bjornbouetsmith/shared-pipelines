@@ -1,0 +1,64 @@
+# Test a target that has already been built.
+#
+# TRX logging is opt-in. The CI pipeline enables it so it can upload the
+# results; the release and version pipelines keep the original plain
+# `dotnet test` invocation.
+name: Test .NET target
+description: Test a target that has already been built, optionally writing TRX results.
+
+inputs:
+  target:
+    description: 'Solution or project to test.'
+    required: true
+  test-project:
+    description: 'Project or solution to test. Empty = target.'
+    required: false
+    default: ''
+  working-directory:
+    description: 'Directory containing the solution.'
+    required: false
+    default: '.'
+  configuration:
+    description: 'Build configuration.'
+    required: false
+    default: 'Release'
+  test-args:
+    description: 'Extra arguments appended to dotnet test.'
+    required: false
+    default: '--verbosity normal'
+  trx:
+    description: 'Write a TRX result file ("true" or "false").'
+    required: false
+    default: 'false'
+  results-directory:
+    description: 'Directory for the TRX file, relative to working-directory.'
+    required: false
+    default: 'artifacts/test-results'
+
+runs:
+  using: composite
+  steps:
+    - name: Test
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TARGET: ${{ inputs.target }}
+        TEST_PROJECT: ${{ inputs.test-project }}
+        CONFIGURATION: ${{ inputs.configuration }}
+        ARGS: ${{ inputs.test-args }}
+        TRX: ${{ inputs.trx }}
+        RESULTS_DIRECTORY: ${{ inputs.results-directory }}
+      run: |
+        set -euo pipefail
+        args=()
+        if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+        subject="${TEST_PROJECT:-$TARGET}"
+        command=(dotnet test "$subject"
+          --no-build
+          --configuration "$CONFIGURATION")
+        if [[ "$TRX" == "true" ]]; then
+          command+=(--logger "trx;LogFileName=results.trx"
+            --results-directory "$RESULTS_DIRECTORY")
+        fi
+        command+=("${args[@]}")
+        "${command[@]}"

@@ -1,0 +1,55 @@
+# Post one commit status to the API for the commit that triggered the run.
+#
+# The three reusable workflows used to repeat the same curl payload six times.
+# The action derives the repository, commit SHA, API URL and action-run target
+# URL from the github context, so callers only pass state, context and text.
+name: Post commit status
+description: Post one pending, success or failure commit status for the triggering commit.
+
+inputs:
+  state:
+    description: 'pending, success, failure or error.'
+    required: true
+  context:
+    description: 'Status context, e.g. continuous-integration/build.'
+    required: true
+  description:
+    description: 'Status description.'
+    required: false
+    default: ''
+  target-url:
+    description: 'URL the status links to. Empty = this workflow run.'
+    required: false
+    default: ''
+  token:
+    description: 'Token used for the API call. Empty = github.token.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Set commit status
+      shell: bash
+      env:
+        STATUS_TOKEN: ${{ inputs.token || github.token }}
+        STATUS_STATE: ${{ inputs.state }}
+        STATUS_CONTEXT: ${{ inputs.context }}
+        STATUS_DESCRIPTION: ${{ inputs.description }}
+        TARGET_URL: ${{ inputs.target-url != '' && inputs.target-url || format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+        REPOSITORY: ${{ github.repository }}
+        COMMIT_SHA: ${{ github.sha }}
+        API_URL: ${{ github.api_url }}
+      run: |
+        set -euo pipefail
+        description="${STATUS_DESCRIPTION:-The build is ${STATUS_STATE}!}"
+        payload="$(jq -nc \
+          --arg state "$STATUS_STATE" \
+          --arg url "$TARGET_URL" \
+          --arg description "$description" \
+          --arg context "$STATUS_CONTEXT" \
+          '{state: $state, target_url: $url, description: $description, context: $context}')"
+        curl --fail-with-body -sS -X POST \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer $STATUS_TOKEN" \
+          "$API_URL/repos/${REPOSITORY}/statuses/${COMMIT_SHA}" -d "$payload"

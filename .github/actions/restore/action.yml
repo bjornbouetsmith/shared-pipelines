@@ -1,0 +1,63 @@
+# Resolve the build target and restore its NuGet dependencies.
+#
+# The target is resolved once here so build and test can reuse it through the
+# `target` output instead of repeating the auto-discovery logic.
+name: Restore .NET dependencies
+description: Resolve the build target and restore its NuGet dependencies.
+
+inputs:
+  solution:
+    description: >-
+      Solution, project or directory to restore, relative to working-directory.
+      Empty = first *.slnx or *.sln in working-directory.
+    required: false
+    default: ''
+  working-directory:
+    description: 'Directory containing the solution.'
+    required: false
+    default: '.'
+  restore-args:
+    description: 'Extra arguments appended to dotnet restore.'
+    required: false
+    default: ''
+
+outputs:
+  target:
+    description: 'The solution/project that was resolved and restored.'
+    value: ${{ steps.resolve.outputs.target }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve build target
+      id: resolve
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_SOLUTION: ${{ inputs.solution }}
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+      run: |
+        set -euo pipefail
+        target="$INPUT_SOLUTION"
+        if [[ -z "$target" ]]; then
+          target="$(find . -maxdepth 1 -type f \( -name '*.slnx' -o -name '*.sln' \) -print -quit)"
+          target="${target#./}"
+        fi
+        if [[ -z "$target" ]]; then
+          echo "::error title=No solution found::Set the 'solution' input or add a .sln/.slnx file to '$WORKING_DIRECTORY'."
+          exit 1
+        fi
+        echo "Building '$target'"
+        echo "target=$target" >> "$GITHUB_OUTPUT"
+
+    - name: Restore dependencies
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TARGET: ${{ steps.resolve.outputs.target }}
+        ARGS: ${{ inputs.restore-args }}
+      run: |
+        set -euo pipefail
+        args=()
+        if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+        dotnet restore "$TARGET" "${args[@]}"
