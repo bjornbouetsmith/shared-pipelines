@@ -290,7 +290,7 @@ so a later file overrides an earlier one.
 
 All other inputs (`solution`, `working-directory`, `dotnet-version`,
 `global-json-file`, `configuration`, `runs-on`, `timeout-minutes`, `cache`,
-`run-tests`, `restore-args`, `build-args`, `test-args`,
+`run-tests`, `test-project`, `restore-args`, `build-args`, `test-args`,
 `upload-test-results`, `artifact-name`, `nuget-feed-owner`,
 `set-commit-status`, `status-context` and every `sonar-*` input) behave exactly
 as in [`dotnet-ci-build.yml`](#dotnet-ci-buildyml).
@@ -368,6 +368,7 @@ the `.nupkg` files. GitHub Packages is on by default and uses
 | `timeout-minutes` | number | `45` | Job timeout. |
 | `cache` | boolean | `true` | Cache `~/.nuget/packages`. |
 | `run-tests` | boolean | `true` | Test before packing. |
+| `test-project` | string | `''` | What to test; empty = the build target. |
 | `restore-args` / `build-args` / `test-args` / `pack-args` | string | see workflow | Extra CLI arguments. |
 | `packages-directory` | string | `'artifacts/packages'` | Output directory for `.nupkg`. |
 | `upload-packages-artifact` | boolean | `true` | Upload the `.nupkg` files as an artifact. |

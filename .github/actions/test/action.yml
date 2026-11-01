@@ -10,6 +10,10 @@ inputs:
   target:
     description: 'Solution or project to test.'
     required: true
+  test-project:
+    description: 'Project or solution to test. Empty = target.'
+    required: false
+    default: ''
   working-directory:
     description: 'Directory containing the solution.'
     required: false
@@ -21,9 +25,13 @@ inputs:
   test-args:
     description: 'Extra arguments appended to dotnet test.'
     required: false
-    default: ''
+    default: '--verbosity normal'
+  trx:
+    description: 'Write a TRX result file ("true" or "false").'
+    required: false
+    default: 'false'
   results-directory:
-    description: 'Directory for the coverage files, relative to working-directory.'
+    description: 'Directory for the TRX file, relative to working-directory.'
     required: false
     default: 'artifacts/test-results'
 
@@ -31,4 +39,26 @@ runs:
   using: composite
   steps:
     - name: Test
-      run: dotnet test ${{ inputs.target }}/**/*.Tests.csproj --configuration ${{ inputs.configuration }} --verbosity normal /p:AltCover=true /p:AltCoverReport="${{ inputs.results-directory }}/${{ inputs.results-directory }}/coverage.opencover-unit.xml" /p:AltCoverAttributeFilter=ExcludeFromCodeCoverage /p:AltCoverVisibleBranches=true ${{ inputs.test-args }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TARGET: ${{ inputs.target }}
+        TEST_PROJECT: ${{ inputs.test-project }}
+        CONFIGURATION: ${{ inputs.configuration }}
+        ARGS: ${{ inputs.test-args }}
+        TRX: ${{ inputs.trx }}
+        RESULTS_DIRECTORY: ${{ inputs.results-directory }}
+      run: |
+        set -euo pipefail
+        args=()
+        if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+        subject="${TEST_PROJECT:-$TARGET}"
+        command=(dotnet test "$subject"
+          --no-build
+          --configuration "$CONFIGURATION")
+        if [[ "$TRX" == "true" ]]; then
+          command+=(--logger "trx;LogFileName=results.trx"
+            --results-directory "$RESULTS_DIRECTORY")
+        fi
+        command+=("${args[@]}")
+        "${command[@]}"
