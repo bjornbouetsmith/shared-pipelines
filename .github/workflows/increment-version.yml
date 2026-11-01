@@ -219,7 +219,7 @@ jobs:
 
       - name: Determine release version
         id: version
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/version@v1.3.0
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/version@v1.3.3
         with:
           operation: increment
           version-file: ${{ inputs.version-file }}
