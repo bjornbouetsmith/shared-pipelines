@@ -1,0 +1,72 @@
+# Poll readiness URLs before the tests run.
+#
+# URLs are separated by newlines or commas. Each URL is polled until curl
+# succeeds or the timeout expires, so a service that is still booting does not
+# make the test step fail with a connection error.
+name: Wait for Docker Compose services
+description: Poll the configured URLs until they answer or the timeout expires.
+
+inputs:
+  urls:
+    description: 'URLs to poll, separated by newlines or commas.'
+    required: true
+  timeout-seconds:
+    description: 'Maximum time to wait for each URL.'
+    required: false
+    default: '120'
+  interval-seconds:
+    description: 'Delay between readiness checks.'
+    required: false
+    default: '2'
+
+runs:
+  using: composite
+  steps:
+    - name: Wait for services
+      shell: bash
+      env:
+        URLS: ${{ inputs.urls }}
+        TIMEOUT: ${{ inputs.timeout-seconds }}
+        INTERVAL: ${{ inputs.interval-seconds }}
+      run: |
+        set -euo pipefail
+
+        if ! command -v curl >/dev/null 2>&1; then
+          echo "::error title=curl missing::Waiting for readiness URLs requires curl on the runner."
+          exit 1
+        fi
+        if [[ ! "$TIMEOUT" =~ ^[0-9]+$ ]] || (( TIMEOUT < 1 )); then
+          echo "::error title=Invalid wait timeout::wait-timeout-seconds must be a positive integer (got '$TIMEOUT')."
+          exit 1
+        fi
+        if [[ ! "$INTERVAL" =~ ^[0-9]+$ ]] || (( INTERVAL < 1 )); then
+          echo "::error title=Invalid wait interval::wait-interval-seconds must be a positive integer (got '$INTERVAL')."
+          exit 1
+        fi
+
+        urls=()
+        while IFS= read -r url; do
+          url="${url%$'\r'}"
+          url="${url#"${url%%[![:space:]]*}"}"
+          url="${url%"${url##*[![:space:]]}"}"
+          [[ -z "$url" ]] && continue
+          urls+=("$url")
+        done < <(printf '%s\n' "$URLS" | tr ',' '\n')
+
+        if (( ${#urls[@]} == 0 )); then
+          echo "::warning title=No readiness URLs::wait-for-urls is empty; skipping readiness checks."
+          exit 0
+        fi
+
+        for url in "${urls[@]}"; do
+          echo "Waiting up to ${TIMEOUT}s for $url"
+          deadline=$((SECONDS + TIMEOUT))
+          until curl --fail --silent --show-error --connect-timeout 5 --max-time 10 "$url" >/dev/null; do
+            if (( SECONDS >= deadline )); then
+              echo "::error title=Service not ready::'$url' did not become ready within ${TIMEOUT}s."
+              exit 1
+            fi
+            sleep "$INTERVAL"
+          done
+          echo "Ready: $url"
+        done

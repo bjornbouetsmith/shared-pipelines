@@ -1,0 +1,92 @@
+# Start Docker Compose services for the Docker-aware CI pipeline.
+#
+# Compose files are relative to working-directory. Multiple files can be
+# separated by newlines or commas and are passed to "docker compose" in order,
+# which is the same override order Docker Compose itself uses. The project name
+# defaults to ci-<run_id>-<job> so parallel jobs do not share containers or
+# volumes.
+name: Start Docker Compose services
+description: Validate Docker Compose and start the configured services.
+
+inputs:
+  compose-files:
+    description: 'Compose files relative to working-directory, separated by newlines or commas.'
+    required: true
+  working-directory:
+    description: 'Directory containing the compose files.'
+    required: false
+    default: '.'
+  project-name:
+    description: 'Compose project name. Empty = ci-<run_id>-<job>.'
+    required: false
+    default: ''
+  up-args:
+    description: 'Extra arguments appended to docker compose up.'
+    required: false
+    default: ''
+
+outputs:
+  project-name:
+    description: 'The Compose project name that was used.'
+    value: ${{ steps.start.outputs.project-name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Start services
+      id: start
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        COMPOSE_FILES: ${{ inputs.compose-files }}
+        PROJECT_NAME: ${{ inputs.project-name }}
+        ARGS: ${{ inputs.up-args }}
+      run: |
+        set -euo pipefail
+
+        if ! command -v docker >/dev/null 2>&1; then
+          echo "::error title=Docker missing::The Docker pipeline requires Docker on the runner."
+          exit 1
+        fi
+        if ! docker compose version >/dev/null 2>&1; then
+          echo "::error title=Docker Compose missing::The Docker pipeline requires the Docker Compose v2 plugin ('docker compose')."
+          exit 1
+        fi
+
+        files=()
+        while IFS= read -r file; do
+          file="${file%$'\r'}"
+          file="${file#"${file%%[![:space:]]*}"}"
+          file="${file%"${file##*[![:space:]]}"}"
+          [[ -z "$file" ]] && continue
+          files+=("$file")
+        done < <(printf '%s\n' "$COMPOSE_FILES" | tr ',' '\n')
+
+        if (( ${#files[@]} == 0 )); then
+          echo "::error title=No compose files::Set docker-compose-files to at least one compose file."
+          exit 1
+        fi
+        for file in "${files[@]}"; do
+          if [[ ! -f "$file" ]]; then
+            echo "::error title=Compose file not found::'$file' does not exist in '$(pwd)'."
+            exit 1
+          fi
+        done
+
+        project="$PROJECT_NAME"
+        if [[ -z "$project" ]]; then
+          project="ci-${GITHUB_RUN_ID}-${GITHUB_JOB}"
+        fi
+
+        compose=()
+        for file in "${files[@]}"; do
+          compose+=(-f "$file")
+        done
+
+        args=()
+        if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+
+        echo "Starting Docker Compose project '$project' with: ${files[*]}"
+        docker compose "${compose[@]}" -p "$project" up -d "${args[@]}"
+        docker compose "${compose[@]}" -p "$project" ps
+        echo "project-name=$project" >> "$GITHUB_OUTPUT"

@@ -7,6 +7,7 @@ as they move their `@vX.Y.Z` reference.
 | Workflow | What it does |
 |---|---|
 | [`dotnet-ci-build.yml`](.github/workflows/dotnet-ci-build.yml) | restore → build → test, with optional SonarQube/SonarCloud analysis |
+| [`dotnet-docker-ci-build.yml`](.github/workflows/dotnet-docker-ci-build.yml) | restore → start Docker Compose services → build → wait for readiness → test → stop services |
 | [`release-nuget.yml`](.github/workflows/release-nuget.yml) | restore → build → test → pack → publish to GitHub Packages and/or nuget.org |
 | [`increment-version.yml`](.github/workflows/increment-version.yml) | bump `<Version>`, build/test a release branch, open a release PR, then tag the merged version |
 
@@ -28,7 +29,7 @@ permissions:
 
 jobs:
   build:
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.2.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.3.0
 ```
 
 That is a complete pipeline: it finds the first `*.slnx` or `*.sln` in the
@@ -38,15 +39,21 @@ repository root, installs the .NET 10 SDK, restores, builds and tests it.
 
 | Reference | Behaviour |
 |---|---|
-| `@v1.2.0` | Exact release — **recommended**. Nothing changes under your feet. |
+| `@v1.3.0` | Exact release — **recommended**. Nothing changes under your feet. |
 | `@<sha>` | Fully immutable, best for audited environments. |
 | `@main` | Bleeding edge, every commit here lands in every consumer immediately. Not recommended. |
 
 Only exact `vX.Y.Z` tags are published; there is no moving `v1` alias. Bump the
 reference in your callers when you want a newer release.
 
+`dotnet-docker-ci-build.yml` and the Docker Compose actions were introduced in
+`v1.3.0`. From `v1.3.0` on, `dotnet-ci-build.yml`, `release-nuget.yml` and
+`increment-version.yml` reference the shared composite actions at the same tag,
+so a single release pins the workflows and the actions they use together.
+
 | Release | Highlights |
 |---|---|
+| `v1.3.0` | New Docker-aware CI pipeline and shared `docker-compose-up`, `docker-compose-wait` and `docker-compose-down` actions; all workflows now pin their composite actions to `v1.3.0` |
 | `v1.2.0` | Shared composite actions for checkout, SDK/cache setup, restore, build, test, Sonar and commit statuses; no workflow input changes |
 | `v1.1.0` | SonarQube/SonarCloud option, pending/success/failure commit statuses |
 | `v1.0.0` | First release: reusable CI, release and versioning workflows |
@@ -73,7 +80,7 @@ reference in your callers when you want a newer release.
 
 ## Shared composite actions
 
-The three reusable workflows are the first consumers of the composite actions in
+The reusable workflows are the first consumers of the composite actions in
 [`.github/actions`](.github/actions). They are implementation details of the
 workflows, not additional public entry points, but listing them makes the
 structure easy to follow:
@@ -85,6 +92,9 @@ structure easy to follow:
 | [`restore`](.github/actions/restore/action.yml) | Resolving the solution and running `dotnet restore`. |
 | [`build`](.github/actions/build/action.yml) | Running `dotnet build --no-restore`. |
 | [`test`](.github/actions/test/action.yml) | Running `dotnet test --no-build`, with optional TRX logging. |
+| [`docker-compose-up`](.github/actions/docker-compose-up/action.yml) | Validating Docker Compose and starting the configured services. |
+| [`docker-compose-wait`](.github/actions/docker-compose-wait/action.yml) | Polling readiness URLs with a configurable timeout and interval. |
+| [`docker-compose-down`](.github/actions/docker-compose-down/action.yml) | Dumping service logs on failure and stopping the stack, tolerating cleanup errors. |
 | [`sonar`](.github/actions/sonar/action.yml) | The `setup`, `begin` and `end` phases of a SonarQube/SonarCloud analysis. |
 | [`commit-status`](.github/actions/commit-status/action.yml) | Posting one pending/success/failure commit status. |
 | [`version`](.github/actions/version/action.yml) | Reading or incrementing the `<Version>` element and computing the release branch/tag. |
@@ -104,7 +114,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.2.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.3.0
     with:
       solution: Source/MyApp.slnx
       nuget-feed-owner: my-github-user
@@ -178,7 +188,7 @@ jobs:
       contents: read
       packages: read
       statuses: write            # only for the commit status options
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.2.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.3.0
     with:
       solution: Source/MyApp.slnx
       sonar: true
@@ -232,6 +242,98 @@ Notes:
 
 ---
 
+## `dotnet-docker-ci-build.yml`
+
+Same restore → build → test pipeline as `dotnet-ci-build.yml`, with a Docker
+Compose lifecycle around it. It accepts every input of `dotnet-ci-build.yml`
+(solution, SDK, build/test arguments, Sonar, commit statuses, NuGet feed and so
+on) plus the Docker inputs below, so nothing is hardcoded.
+
+```yaml
+jobs:
+  ci:
+    permissions:
+      contents: read
+      packages: read
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-docker-ci-build.yml@v1.3.0
+    with:
+      working-directory: Source
+      solution: ETCDConfiguration.sln
+      docker-compose-files: docker-compose.yml
+      wait-for-urls: http://127.0.0.1:2379/health
+      test-env: ETCD_ENDPOINT=http://127.0.0.1:2379
+      test-results-directory: TestResults
+      upload-test-results: true
+```
+
+`docker-compose-files` defaults to `docker-compose.yml`, so the smallest call
+starts the compose file in `working-directory`. Set it to an empty string to run
+the pipeline without Docker.
+
+### Docker inputs
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `docker-compose-files` | string | `'docker-compose.yml'` | Newline- or comma-separated compose files, relative to `working-directory`. Empty = no Docker. |
+| `docker-compose-project-name` | string | `''` | Compose project name. Empty = `ci-<run_id>-<job>`, so parallel jobs do not share containers or volumes. |
+| `docker-compose-up-args` | string | `''` | Extra arguments appended to `docker compose up`. |
+| `docker-compose-down-args` | string | `'-v --remove-orphans'` | Extra arguments appended to `docker compose down`. |
+| `wait-for-urls` | string | `''` | Newline- or comma-separated URLs polled after the build and before the tests. Empty = no readiness wait. |
+| `wait-timeout-seconds` | number | `120` | Maximum time to wait for each readiness URL. |
+| `wait-interval-seconds` | number | `2` | Delay between readiness checks. |
+| `test-env` | string | `''` | Newline-separated `KEY=VALUE` lines exported to the build and test processes. |
+| `test-results-directory` | string | `'artifacts/test-results'` | Directory for the `.trx` files, relative to `working-directory`, also used as the upload path. |
+| `docker-logs-on-failure` | boolean | `true` | Dump `docker compose ps` and `docker compose logs --no-color --timestamps` before stopping the stack when the job fails. |
+
+Multiple compose files are passed as repeated `-f` arguments in the order given,
+so a later file overrides an earlier one.
+
+All other inputs (`solution`, `working-directory`, `dotnet-version`,
+`global-json-file`, `configuration`, `runs-on`, `timeout-minutes`, `cache`,
+`run-tests`, `test-project`, `restore-args`, `build-args`, `test-args`,
+`upload-test-results`, `artifact-name`, `nuget-feed-owner`,
+`set-commit-status`, `status-context` and every `sonar-*` input) behave exactly
+as in [`dotnet-ci-build.yml`](#dotnet-ci-buildyml).
+
+### Lifecycle
+
+1. Exports `test-env` to `$GITHUB_ENV` before anything else runs, failing on a
+   line that is not `KEY=VALUE`.
+2. Restores the solution.
+3. Starts the compose stack with the resolved project name.
+4. Builds, then polls `wait-for-urls`.
+5. Runs `dotnet test` with the exported environment.
+6. On failure, dumps `docker compose ps` and the service logs when
+   `docker-logs-on-failure` is true.
+7. Always runs `docker compose down` with `-v --remove-orphans`, tolerating
+   errors so cleanup never masks the real failure.
+
+The Compose lifecycle lives in the shared
+[`docker-compose-up`](.github/actions/docker-compose-up/action.yml),
+[`docker-compose-wait`](.github/actions/docker-compose-wait/action.yml) and
+[`docker-compose-down`](.github/actions/docker-compose-down/action.yml) actions,
+so the same behaviour can be reused by other pipelines later.
+
+### Secrets, outputs and permissions
+
+The secrets (`nuget-token`, `sonar-token`), output (`target`) and permission
+requirements are the same as [`dotnet-ci-build.yml`](#dotnet-ci-buildyml).
+
+### Runner requirements and caveats
+
+- Linux or macOS runner with Docker and the Docker Compose v2 plugin
+  (`docker compose`, not `docker-compose`).
+- Compose files are resolved relative to `working-directory`; service ports must
+  be reachable from the runner, so map them to `127.0.0.1` when possible.
+- `test-env` is plaintext in the workflow. Do not put secrets there.
+- A fixed `docker-compose-project-name` makes concurrent runs collide; leave it
+  empty unless you have a reason to share a project.
+- Fork pull requests can still start Docker on GitHub-hosted runners. The
+  `statuses: write` caveat from `dotnet-ci-build.yml` applies to the commit
+  status options.
+
+---
+
 ## `release-nuget.yml`
 
 ```yaml
@@ -241,7 +343,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.2.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.3.0
     with:
       solution: Source/MyApp.slnx
       allowed-actors: my-github-user
@@ -337,7 +439,7 @@ permissions:
 
 jobs:
   release:
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/increment-version.yml@v1.2.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/increment-version.yml@v1.3.0
     with:
       version-part: ${{ inputs.version_part || 'patch' }}
     secrets: inherit

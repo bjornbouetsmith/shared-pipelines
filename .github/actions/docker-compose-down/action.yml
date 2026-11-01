@@ -1,0 +1,118 @@
+# Dump service logs and stop Docker Compose services.
+#
+# The workflow invokes this with if: always() so cleanup runs after a failure.
+# Both the log dump and "docker compose down" tolerate errors, so cleanup never
+# masks the real failure. Set dump-logs to true (usually from failure()) to
+# print "docker compose ps" and the service logs before removing the stack.
+name: Stop Docker Compose services
+description: Dump service logs on failure and stop the configured services.
+
+inputs:
+  compose-files:
+    description: 'Compose files relative to working-directory, separated by newlines or commas.'
+    required: true
+  working-directory:
+    description: 'Directory containing the compose files.'
+    required: false
+    default: '.'
+  project-name:
+    description: 'Compose project name. Empty = ci-<run_id>-<job>.'
+    required: false
+    default: ''
+  down-args:
+    description: 'Extra arguments appended to docker compose down.'
+    required: false
+    default: '-v --remove-orphans'
+  dump-logs:
+    description: 'Dump docker compose ps and logs before stopping ("true" or "false").'
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Dump service logs
+      if: ${{ always() && inputs.dump-logs == 'true' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        COMPOSE_FILES: ${{ inputs.compose-files }}
+        PROJECT_NAME: ${{ inputs.project-name }}
+      run: |
+        set -uo pipefail
+        if ! command -v docker >/dev/null 2>&1; then
+          echo "::warning title=Docker missing::Cannot dump Docker Compose logs because Docker is not installed."
+          exit 0
+        fi
+
+        files=()
+        while IFS= read -r file; do
+          file="${file%$'\r'}"
+          file="${file#"${file%%[![:space:]]*}"}"
+          file="${file%"${file##*[![:space:]]}"}"
+          [[ -z "$file" ]] && continue
+          files+=("$file")
+        done < <(printf '%s\n' "$COMPOSE_FILES" | tr ',' '\n')
+        if (( ${#files[@]} == 0 )); then
+          exit 0
+        fi
+
+        project="$PROJECT_NAME"
+        if [[ -z "$project" ]]; then
+          project="ci-${GITHUB_RUN_ID}-${GITHUB_JOB}"
+        fi
+
+        compose=()
+        for file in "${files[@]}"; do
+          compose+=(-f "$file")
+        done
+
+        echo "::group::docker compose ps"
+        docker compose "${compose[@]}" -p "$project" ps || true
+        echo "::endgroup::"
+        echo "::group::docker compose logs"
+        docker compose "${compose[@]}" -p "$project" logs --no-color --timestamps || true
+        echo "::endgroup::"
+
+    - name: Stop services
+      if: ${{ always() }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        COMPOSE_FILES: ${{ inputs.compose-files }}
+        PROJECT_NAME: ${{ inputs.project-name }}
+        ARGS: ${{ inputs.down-args }}
+      run: |
+        set -uo pipefail
+        if ! command -v docker >/dev/null 2>&1; then
+          echo "::warning title=Docker missing::Skipping docker compose down because Docker is not installed."
+          exit 0
+        fi
+
+        files=()
+        while IFS= read -r file; do
+          file="${file%$'\r'}"
+          file="${file#"${file%%[![:space:]]*}"}"
+          file="${file%"${file##*[![:space:]]}"}"
+          [[ -z "$file" ]] && continue
+          files+=("$file")
+        done < <(printf '%s\n' "$COMPOSE_FILES" | tr ',' '\n')
+        if (( ${#files[@]} == 0 )); then
+          exit 0
+        fi
+
+        project="$PROJECT_NAME"
+        if [[ -z "$project" ]]; then
+          project="ci-${GITHUB_RUN_ID}-${GITHUB_JOB}"
+        fi
+
+        compose=()
+        for file in "${files[@]}"; do
+          compose+=(-f "$file")
+        done
+
+        args=()
+        if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+
+        echo "Stopping Docker Compose project '$project'"
+        docker compose "${compose[@]}" -p "$project" down "${args[@]}" || true

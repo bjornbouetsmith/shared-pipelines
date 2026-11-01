@@ -1,0 +1,457 @@
+# Reusable .NET CI pipeline with Docker Compose services:
+# restore -> start services -> build -> wait for readiness -> test -> stop.
+#
+# Call it from any repository:
+#
+#   jobs:
+#     ci:
+#       permissions:
+#         contents: read
+#       uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-docker-ci-build.yml@v1.3.0
+#       with:
+#         working-directory: Source
+#         docker-compose-files: docker-compose.yml
+#         wait-for-urls: http://127.0.0.1:2379/health
+#         test-env: ETCD_ENDPOINT=http://127.0.0.1:2379
+#         test-results-directory: TestResults
+#
+# Every input is optional. docker-compose-files defaults to docker-compose.yml,
+# so the smallest possible call starts the compose file in working-directory.
+# Set docker-compose-files to an empty string to disable Docker and use this
+# workflow as a regular CI pipeline.
+#
+# The Docker lifecycle is implemented by the shared composite actions
+# docker-compose-up, docker-compose-wait and docker-compose-down, so callers can
+# customize the compose files, project name, up/down arguments, readiness URLs,
+# timeout and failure log behaviour without editing this workflow.
+#
+# This workflow mirrors the orchestration of dotnet-ci-build.yml instead of
+# calling it, because a reusable-workflow job cannot insert Docker steps around
+# another reusable workflow's build/test steps. The build, test, Sonar, status
+# and Docker work itself is shared through the composite actions in
+# .github/actions, so a fix there reaches both pipelines.
+#
+# Sonar analysis is opt-in through the `sonar` input; everything the scanner
+# needs (host, project key, organization, JDK, coverage reports, extra
+# properties, quality gate behaviour and the commit status context) is a
+# parameter. See the Sonar section of README.md.
+#
+# Runner requirement: the steps are bash and need Docker with the Compose v2
+# plugin, so runs-on must be Linux or macOS.
+# Full input/secret/output reference: README.md
+
+name: .NET Docker CI Build
+
+on:
+  workflow_call:
+    inputs:
+      solution:
+        description: >-
+          Solution, project or directory to restore/build/test, relative to
+          working-directory. Empty = first *.slnx or *.sln in working-directory.
+        type: string
+        default: ''
+      working-directory:
+        description: 'Directory containing the solution and the compose files.'
+        type: string
+        default: '.'
+      dotnet-version:
+        description: >-
+          .NET SDK version to install, e.g. "10.0.x" or "8.0.x,10.0.x".
+          Ignored when global-json-file is set.
+        type: string
+        default: '10.0.x'
+      global-json-file:
+        description: 'global.json to read the SDK version from. Overrides dotnet-version.'
+        type: string
+        default: ''
+      configuration:
+        description: 'Build configuration.'
+        type: string
+        default: 'Release'
+      runs-on:
+        description: >-
+          Runner label(s). Use a JSON array string for several labels, e.g.
+          '["self-hosted","linux"]'.
+        type: string
+        default: 'ubuntu-latest'
+      timeout-minutes:
+        description: 'Job timeout in minutes.'
+        type: number
+        default: 30
+      cache:
+        description: 'Cache the NuGet package folder between runs.'
+        type: boolean
+        default: true
+      run-tests:
+        description: 'Run dotnet test after the build.'
+        type: boolean
+        default: true
+      test-project:
+        description: 'Project or solution to test. Empty = the resolved build target.'
+        type: string
+        default: ''
+      restore-args:
+        description: 'Extra arguments appended to dotnet restore.'
+        type: string
+        default: ''
+      build-args:
+        description: 'Extra arguments appended to dotnet build.'
+        type: string
+        default: ''
+      test-args:
+        description: >-
+          Extra arguments appended to dotnet test. Use this for coverage
+          generation, e.g. /p:AltCover=true /p:AltCoverReport=...
+        type: string
+        default: '--verbosity normal'
+      upload-test-results:
+        description: 'Upload the .trx test results as an artifact.'
+        type: boolean
+        default: false
+      artifact-name:
+        description: 'Name of the test results artifact.'
+        type: string
+        default: 'test-results'
+      test-results-directory:
+        description: >-
+          Directory for the .trx files, relative to working-directory. Also used
+          as the upload path when upload-test-results is true.
+        type: string
+        default: 'artifacts/test-results'
+      test-env:
+        description: >-
+          Newline-separated KEY=VALUE lines exported to the build and test
+          processes, e.g. "ETCD_ENDPOINT=http://127.0.0.1:2379". Do not put
+          secrets here; pass them as workflow secrets instead.
+        type: string
+        default: ''
+      docker-compose-files:
+        description: >-
+          Newline- or comma-separated Docker Compose files, relative to
+          working-directory. Empty = do not start any services.
+        type: string
+        default: 'docker-compose.yml'
+      docker-compose-project-name:
+        description: >-
+          Docker Compose project name. Empty = ci-<run_id>-<job>, which keeps
+          parallel jobs from sharing containers or volumes.
+        type: string
+        default: ''
+      docker-compose-up-args:
+        description: 'Extra arguments appended to docker compose up.'
+        type: string
+        default: ''
+      docker-compose-down-args:
+        description: 'Extra arguments appended to docker compose down.'
+        type: string
+        default: '-v --remove-orphans'
+      wait-for-urls:
+        description: >-
+          Newline- or comma-separated URLs polled after the build and before the
+          tests, e.g. "http://127.0.0.1:2379/health". Empty = do not wait.
+        type: string
+        default: ''
+      wait-timeout-seconds:
+        description: 'Maximum time to wait for each readiness URL.'
+        type: number
+        default: 120
+      wait-interval-seconds:
+        description: 'Delay between readiness checks.'
+        type: number
+        default: 2
+      docker-logs-on-failure:
+        description: 'Dump docker compose ps and logs when the job fails.'
+        type: boolean
+        default: true
+      nuget-feed-owner:
+        description: >-
+          GitHub Packages owner to authenticate against
+          (https://nuget.pkg.github.com/<owner>/index.json).
+          Empty = do not add a NuGet source.
+        type: string
+        default: ''
+      set-commit-status:
+        description: >-
+          Post pending/success/failure commit statuses for the build itself.
+          Requires the statuses: write permission in the calling job.
+        type: boolean
+        default: false
+      status-context:
+        description: 'Commit status context used when set-commit-status is true.'
+        type: string
+        default: 'continuous-integration/build'
+      sonar:
+        description: 'Run a SonarQube/SonarCloud analysis around the build and test steps.'
+        type: boolean
+        default: false
+      sonar-host-url:
+        description: 'SonarQube or SonarCloud server URL.'
+        type: string
+        default: 'https://sonarcloud.io'
+      sonar-project-key:
+        description: 'Sonar project key, e.g. owner_repository. Required when sonar is true.'
+        type: string
+        default: ''
+      sonar-organization:
+        description: 'SonarCloud organization. Empty = omit the /o argument (self-hosted SonarQube).'
+        type: string
+        default: ''
+      sonar-java-version:
+        description: 'JDK version required by the Sonar scanner.'
+        type: string
+        default: '17'
+      sonar-java-distribution:
+        description: 'JDK distribution installed with actions/setup-java.'
+        type: string
+        default: 'oracle'
+      sonar-scanner-version:
+        description: 'dotnet-sonarscanner tool version. Empty = latest.'
+        type: string
+        default: ''
+      sonar-coverage-reports:
+        description: >-
+          Value for sonar.cs.opencover.reportsPaths, relative to
+          working-directory, e.g. "**/coverage.opencover*.xml".
+          Empty = do not import coverage.
+        type: string
+        default: ''
+      sonar-quality-gate-wait:
+        description: 'Fail the step when the Sonar quality gate fails (sonar.qualitygate.wait).'
+        type: boolean
+        default: true
+      sonar-extra-args:
+        description: >-
+          Extra arguments appended to "dotnet-sonarscanner begin", e.g.
+          '/d:sonar.exclusions=**/Migrations/**'.
+        type: string
+        default: ''
+      sonar-end-args:
+        description: 'Extra arguments appended to "dotnet-sonarscanner end".'
+        type: string
+        default: ''
+      sonar-publish-status:
+        description: >-
+          Post pending/success/failure commit statuses for the quality gate.
+          Requires the statuses: write permission in the calling job.
+        type: boolean
+        default: true
+      sonar-status-context:
+        description: 'Commit status context used for the quality gate statuses.'
+        type: string
+        default: 'continuous-integration/sonarcloud'
+    secrets:
+      nuget-token:
+        description: 'Token for the GitHub Packages feed. Defaults to github.token.'
+        required: false
+      sonar-token:
+        description: 'SonarQube/SonarCloud token. Required when the sonar input is true.'
+        required: false
+    outputs:
+      target:
+        description: 'Solution or project that was restored, built and tested.'
+        value: ${{ jobs.build.outputs.target }}
+
+# No `permissions:` block on purpose. A called workflow can only reduce the
+# caller's GITHUB_TOKEN permissions, and asking for a scope the caller did not
+# grant fails the whole run at startup with
+# "The workflow is requesting '<scope>', but is only allowed 'none'".
+# Grant the scopes you need in the calling job; see README.md.
+jobs:
+  build:
+    name: Restore, build and test with Docker Compose
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    outputs:
+      target: ${{ steps.restore.outputs.target }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Check out
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/checkout@v1.3.0
+        with:
+          full-history: ${{ inputs.sonar }}
+
+      - name: Set commit status to pending
+        if: ${{ inputs.set-commit-status }}
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.3.0
+        with:
+          state: pending
+          context: ${{ inputs.status-context }}
+          description: The build is pending!
+
+      - name: Set quality gate status to pending
+        if: ${{ inputs.sonar && inputs.sonar-publish-status }}
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.3.0
+        with:
+          state: pending
+          context: ${{ inputs.sonar-status-context }}
+          description: The quality gate is pending!
+
+      - name: Set up .NET and NuGet
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/setup-dotnet@v1.3.0
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+          global-json-file: ${{ inputs.global-json-file }}
+          cache: ${{ inputs.cache }}
+          nuget-feed-owner: ${{ inputs.nuget-feed-owner }}
+          nuget-token: ${{ secrets.nuget-token }}
+
+      - name: Export test environment
+        if: ${{ inputs.test-env != '' }}
+        shell: bash
+        env:
+          TEST_ENV: ${{ inputs.test-env }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line%$'\r'}"
+            [[ -z "${line//[[:space:]]/}" ]] && continue
+            [[ "$line" == \#* ]] && continue
+            if [[ "$line" != *=* ]]; then
+              echo "::error title=Invalid test-env line::Expected KEY=VALUE, got '$line'."
+              exit 1
+            fi
+            key="${line%%=*}"
+            if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+              echo "::error title=Invalid test-env key::'$key' is not a valid environment variable name."
+              exit 1
+            fi
+            printf '%s\n' "$line" >> "$GITHUB_ENV"
+          done <<< "$TEST_ENV"
+
+      - name: Prepare Sonar analysis
+        if: ${{ inputs.sonar }}
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/sonar@v1.3.0
+        with:
+          phase: setup
+          token: ${{ secrets.sonar-token }}
+          host-url: ${{ inputs.sonar-host-url }}
+          project-key: ${{ inputs.sonar-project-key }}
+          java-version: ${{ inputs.sonar-java-version }}
+          java-distribution: ${{ inputs.sonar-java-distribution }}
+          scanner-version: ${{ inputs.sonar-scanner-version }}
+
+      - name: Restore dependencies
+        id: restore
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/restore@v1.3.0
+        with:
+          solution: ${{ inputs.solution }}
+          working-directory: ${{ inputs.working-directory }}
+          restore-args: ${{ inputs.restore-args }}
+
+      - name: Start Docker Compose services
+        if: ${{ inputs.docker-compose-files != '' }}
+        id: docker_up
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/docker-compose-up@v1.3.0
+        with:
+          compose-files: ${{ inputs.docker-compose-files }}
+          working-directory: ${{ inputs.working-directory }}
+          project-name: ${{ inputs.docker-compose-project-name }}
+          up-args: ${{ inputs.docker-compose-up-args }}
+
+      - name: Analyse with Sonar (begin)
+        if: ${{ inputs.sonar }}
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/sonar@v1.3.0
+        with:
+          phase: begin
+          token: ${{ secrets.sonar-token }}
+          host-url: ${{ inputs.sonar-host-url }}
+          project-key: ${{ inputs.sonar-project-key }}
+          organization: ${{ inputs.sonar-organization }}
+          coverage-reports: ${{ inputs.sonar-coverage-reports }}
+          quality-gate-wait: ${{ inputs.sonar-quality-gate-wait }}
+          extra-args: ${{ inputs.sonar-extra-args }}
+
+      - name: Build
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/build@v1.3.0
+        with:
+          target: ${{ steps.restore.outputs.target }}
+          working-directory: ${{ inputs.working-directory }}
+          configuration: ${{ inputs.configuration }}
+          build-args: ${{ inputs.build-args }}
+
+      - name: Wait for Docker Compose services
+        if: ${{ inputs.run-tests && inputs.docker-compose-files != '' && inputs.wait-for-urls != '' }}
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/docker-compose-wait@v1.3.0
+        with:
+          urls: ${{ inputs.wait-for-urls }}
+          timeout-seconds: ${{ inputs.wait-timeout-seconds }}
+          interval-seconds: ${{ inputs.wait-interval-seconds }}
+
+      - name: Test
+        if: ${{ inputs.run-tests }}
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/test@v1.3.0
+        with:
+          target: ${{ steps.restore.outputs.target }}
+          test-project: ${{ inputs.test-project }}
+          working-directory: ${{ inputs.working-directory }}
+          configuration: ${{ inputs.configuration }}
+          test-args: ${{ inputs.test-args }}
+          trx: 'true'
+          results-directory: ${{ inputs.test-results-directory }}
+
+      - name: Set commit status to success
+        if: ${{ inputs.set-commit-status && success() }}
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.3.0
+        with:
+          state: success
+          context: ${{ inputs.status-context }}
+          description: The build succeeded!
+
+      - name: Set commit status to failure
+        if: ${{ inputs.set-commit-status && failure() }}
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.3.0
+        with:
+          state: failure
+          context: ${{ inputs.status-context }}
+          description: The build failed!
+
+      - name: Analyse with Sonar (end)
+        if: ${{ inputs.sonar }}
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/sonar@v1.3.0
+        with:
+          phase: end
+          token: ${{ secrets.sonar-token }}
+          end-args: ${{ inputs.sonar-end-args }}
+
+      - name: Set quality gate status to success
+        if: ${{ inputs.sonar && inputs.sonar-publish-status && success() }}
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.3.0
+        with:
+          state: success
+          context: ${{ inputs.sonar-status-context }}
+          description: The quality gate succeeded!
+
+      - name: Set quality gate status to failure
+        if: ${{ inputs.sonar && inputs.sonar-publish-status && failure() }}
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.3.0
+        with:
+          state: failure
+          context: ${{ inputs.sonar-status-context }}
+          description: The quality gate failed!
+
+      - name: Upload test results
+        if: ${{ inputs.upload-test-results && always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.working-directory }}/${{ inputs.test-results-directory }}
+          if-no-files-found: ignore
+
+      - name: Mark Docker logs for failure
+        id: docker_logs
+        if: ${{ failure() && inputs.docker-compose-files != '' && inputs.docker-logs-on-failure }}
+        shell: bash
+        run: echo "dump-logs=true" >> "$GITHUB_OUTPUT"
+
+      - name: Stop Docker Compose services
+        if: ${{ always() && inputs.docker-compose-files != '' }}
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/docker-compose-down@v1.3.0
+        with:
+          compose-files: ${{ inputs.docker-compose-files }}
+          working-directory: ${{ inputs.working-directory }}
+          project-name: ${{ steps.docker_up.outputs.project-name || inputs.docker-compose-project-name }}
+          down-args: ${{ inputs.docker-compose-down-args }}
+          dump-logs: ${{ steps.docker_logs.outputs.dump-logs || 'false' }}

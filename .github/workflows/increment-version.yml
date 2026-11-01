@@ -197,19 +197,19 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
     steps:
       - name: Validate inputs
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/validate-version-inputs@v1.2.0
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/validate-version-inputs@v1.3.0
         with:
           mode: ${{ inputs.mode }}
           version-part: ${{ inputs.version-part }}
 
       - name: Check out ${{ inputs.target-branch }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/checkout@v1.2.0
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/checkout@v1.3.0
         with:
           ref: ${{ inputs.target-branch }}
           token: ${{ secrets.release-token }}
 
       - name: Set up .NET and NuGet
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/setup-dotnet@v1.2.0
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/setup-dotnet@v1.3.0
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
           global-json-file: ${{ inputs.global-json-file }}
@@ -219,7 +219,7 @@ jobs:
 
       - name: Determine release version
         id: version
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/version@v1.2.0
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/version@v1.3.0
         with:
           operation: increment
           version-file: ${{ inputs.version-file }}
@@ -247,7 +247,7 @@ jobs:
       - name: Restore dependencies
         if: ${{ inputs.run-tests }}
         id: restore
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/restore@v1.2.0
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/restore@v1.3.0
         with:
           solution: ${{ inputs.solution }}
           working-directory: ${{ inputs.working-directory }}
@@ -255,7 +255,7 @@ jobs:
 
       - name: Build
         if: ${{ inputs.run-tests }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/build@v1.2.0
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/build@v1.3.0
         with:
           target: ${{ steps.restore.outputs.target }}
           working-directory: ${{ inputs.working-directory }}
@@ -264,7 +264,7 @@ jobs:
 
       - name: Test
         if: ${{ inputs.run-tests }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/test@v1.2.0
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/test@v1.3.0
         with:
           target: ${{ steps.restore.outputs.target }}
           working-directory: ${{ inputs.working-directory }}
@@ -344,14 +344,14 @@ jobs:
       tag: ${{ steps.create_tag.outputs.tag }}
     steps:
       - name: Validate inputs
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/validate-version-inputs@v1.2.0
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/validate-version-inputs@v1.3.0
         with:
           mode: ${{ inputs.mode }}
           version-part: ${{ inputs.version-part }}
           validate-version-part: 'false'
 
       - name: Check out ${{ inputs.target-branch }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/checkout@v1.2.0
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/checkout@v1.3.0
         with:
           ref: ${{ inputs.target-branch }}
           full-history: 'true'
@@ -359,7 +359,7 @@ jobs:
 
       - name: Read version
         id: read
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/version@v1.2.0
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/version@v1.3.0
         with:
           operation: read
           version-file: ${{ inputs.version-file }}
