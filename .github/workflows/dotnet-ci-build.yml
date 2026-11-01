@@ -85,12 +85,13 @@ on:
         default: ''
       test-args:
         description: >-
-          Extra arguments appended to dotnet test. Use this for coverage
-          generation, e.g. /p:AltCover=true /p:AltCoverReport=...
+          Extra arguments appended to dotnet test. AltCover coverage is now
+          integrated by default, so use this for additional options like
+          verbosity override or test filters.
         type: string
-        default: '--verbosity normal'
+        default: ''
       upload-test-results:
-        description: 'Upload the .trx test results as an artifact.'
+        description: 'Upload TestResults artifact if true (AltCover coverage reports).'
         type: boolean
         default: false
       artifact-name:
@@ -277,15 +278,13 @@ jobs:
 
       - name: Test
         if: ${{ inputs.run-tests }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/test@v1.3.0
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/test@v1.3.1
         with:
           target: ${{ steps.restore.outputs.target }}
           test-project: ${{ inputs.test-project }}
           working-directory: ${{ inputs.working-directory }}
           configuration: ${{ inputs.configuration }}
           test-args: ${{ inputs.test-args }}
-          trx: 'true'
-          results-directory: artifacts/test-results
 
       - name: Set commit status to success
         if: ${{ inputs.set-commit-status && success() }}
@@ -332,5 +331,5 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact-name }}
-          path: ${{ inputs.working-directory }}/artifacts/test-results
+          path: ${{ inputs.working-directory }}/coverage.opencover*.xml
           if-no-files-found: ignore

@@ -91,7 +91,7 @@ structure easy to follow:
 | [`setup-dotnet`](.github/actions/setup-dotnet/action.yml) | Installing the .NET SDK, caching `~/.nuget/packages` and adding the GitHub Packages source. |
 | [`restore`](.github/actions/restore/action.yml) | Resolving the solution and running `dotnet restore`. |
 | [`build`](.github/actions/build/action.yml) | Running `dotnet build --no-restore`. |
-| [`test`](.github/actions/test/action.yml) | Running `dotnet test --no-build`, with optional TRX logging. |
+| [`test`](.github/actions/test/action.yml) | Running `dotnet test --no-build` with code coverage using AltCover. |
 | [`docker-compose-up`](.github/actions/docker-compose-up/action.yml) | Validating Docker Compose and starting the configured services. |
 | [`docker-compose-wait`](.github/actions/docker-compose-wait/action.yml) | Polling readiness URLs with a configurable timeout and interval. |
 | [`docker-compose-down`](.github/actions/docker-compose-down/action.yml) | Dumping service logs on failure and stopping the stack, tolerating cleanup errors. |
@@ -134,8 +134,8 @@ jobs:
 | `cache` | boolean | `true` | Cache `~/.nuget/packages`. |
 | `run-tests` | boolean | `true` | Run `dotnet test`. |
 | `test-project` | string | `''` | What to test. Empty = the resolved build target. Must be part of the built target because `--no-build` is used. |
-| `restore-args` / `build-args` / `test-args` | string | `''` / `''` / `'--verbosity normal'` | Extra CLI arguments. Quoted values are preserved. |
-| `upload-test-results` | boolean | `false` | Upload the generated `.trx`. |
+| `restore-args` / `build-args` / `test-args` | string | `''` / `''` / `'--verbosity normal'` | Extra CLI arguments. Quoted values are preserved. Use `test-args` for additional test filters, verbosity override, or other options beyond coverage.
+| `upload-test-results` | boolean | `false` | Upload test results artifact (AltCover coverage report). |
 | `artifact-name` | string | `'test-results'` | Artifact name. |
 | `nuget-feed-owner` | string | `''` | Add `https://nuget.pkg.github.com/<owner>/index.json` as the `github` source. |
 | `set-commit-status` | boolean | `false` | Post `pending`/`success`/`failure` commit statuses for the build. |
@@ -196,11 +196,7 @@ jobs:
       sonar-organization: my-org
       sonar-coverage-reports: '**/coverage.opencover*.xml'
       test-args: >-
-        --verbosity normal
-        /p:AltCover=true
-        /p:AltCoverReport=/home/runner/work/MyApp/MyApp/Source/MyApp.Tests/coverage.opencover.xml
-        /p:AltCoverAttributeFilter=ExcludeFromCodeCoverage
-        /p:AltCoverVisibleBranches=true
+        --filter "TestCategory!=Integration" 
     secrets:
       sonar-token: ${{ secrets.SONAR_TOKEN }}   # name on the left, repo secret on the right
 ```
@@ -262,7 +258,6 @@ jobs:
       docker-compose-files: docker-compose.yml
       wait-for-urls: http://127.0.0.1:2379/health
       test-env: ETCD_ENDPOINT=http://127.0.0.1:2379
-      test-results-directory: TestResults
       upload-test-results: true
 ```
 
@@ -282,7 +277,6 @@ the pipeline without Docker.
 | `wait-timeout-seconds` | number | `120` | Maximum time to wait for each readiness URL. |
 | `wait-interval-seconds` | number | `2` | Delay between readiness checks. |
 | `test-env` | string | `''` | Newline-separated `KEY=VALUE` lines exported to the build and test processes. |
-| `test-results-directory` | string | `'artifacts/test-results'` | Directory for the `.trx` files, relative to `working-directory`, also used as the upload path. |
 | `docker-logs-on-failure` | boolean | `true` | Dump `docker compose ps` and `docker compose logs --no-color --timestamps` before stopping the stack when the job fails. |
 
 Multiple compose files are passed as repeated `-f` arguments in the order given,
