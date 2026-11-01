@@ -1,0 +1,161 @@
+# SonarQube / SonarCloud lifecycle.
+#
+# A composite action cannot wrap caller steps, so the lifecycle is split into
+# three phases that the workflow invokes around restore/build/test:
+#
+#   setup  - validate inputs, install the JDK and the scanner
+#   begin  - dotnet-sonarscanner begin, after restore and before build
+#   end    - dotnet-sonarscanner end, after build and test
+#
+# Keeping all three phases in one file keeps the scanner configuration and the
+# input validation in one place.
+name: SonarQube / SonarCloud
+description: Set up, begin and end a SonarQube/SonarCloud analysis around build and test.
+
+inputs:
+  phase:
+    description: 'setup, begin or end.'
+    required: true
+  token:
+    description: 'SonarQube/SonarCloud token.'
+    required: false
+    default: ''
+  host-url:
+    description: 'SonarQube or SonarCloud server URL.'
+    required: false
+    default: 'https://sonarcloud.io'
+  project-key:
+    description: 'Sonar project key, e.g. owner_repository.'
+    required: false
+    default: ''
+  organization:
+    description: 'SonarCloud organization. Empty = omit /o (self-hosted SonarQube).'
+    required: false
+    default: ''
+  java-version:
+    description: 'JDK version required by the Sonar scanner.'
+    required: false
+    default: '17'
+  java-distribution:
+    description: 'JDK distribution installed with actions/setup-java.'
+    required: false
+    default: 'oracle'
+  scanner-version:
+    description: 'dotnet-sonarscanner tool version. Empty = latest.'
+    required: false
+    default: ''
+  coverage-reports:
+    description: >-
+      Value for sonar.cs.opencover.reportsPaths, relative to working-directory.
+      Empty = do not import coverage.
+    required: false
+    default: ''
+  quality-gate-wait:
+    description: 'Fail when the quality gate fails (sonar.qualitygate.wait).'
+    required: false
+    default: 'true'
+  extra-args:
+    description: 'Extra arguments appended to dotnet-sonarscanner begin.'
+    required: false
+    default: ''
+  end-args:
+    description: 'Extra arguments appended to dotnet-sonarscanner end.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Validate Sonar inputs
+      if: ${{ inputs.phase == 'setup' }}
+      shell: bash
+      env:
+        PROJECT_KEY: ${{ inputs.project-key }}
+        HOST_URL: ${{ inputs.host-url }}
+        SONAR_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        missing=0
+        if [[ -z "$PROJECT_KEY" ]]; then
+          echo "::error title=sonar-project-key missing::The 'sonar' input is enabled but 'sonar-project-key' is empty."
+          missing=1
+        fi
+        if [[ -z "$HOST_URL" ]]; then
+          echo "::error title=sonar-host-url missing::The 'sonar' input is enabled but 'sonar-host-url' is empty."
+          missing=1
+        fi
+        if [[ -z "$SONAR_TOKEN" ]]; then
+          echo "::error title=sonar-token missing::The 'sonar' input is enabled but the 'sonar-token' secret is empty. Add the token to the calling repository and pass it as the sonar-token secret. 'secrets: inherit' only forwards secrets under their own names, so a secret called SONAR_TOKEN has to be mapped explicitly."
+          missing=1
+        fi
+        if (( missing != 0 )); then
+          exit 1
+        fi
+
+    - name: Set up JDK for Sonar
+      if: ${{ inputs.phase == 'setup' }}
+      uses: actions/setup-java@v6
+      with:
+        java-version: ${{ inputs.java-version }}
+        distribution: ${{ inputs.java-distribution }}
+
+    - name: Install Sonar scanner
+      if: ${{ inputs.phase == 'setup' }}
+      shell: bash
+      env:
+        SCANNER_VERSION: ${{ inputs.scanner-version }}
+      run: |
+        set -euo pipefail
+        args=(--global dotnet-sonarscanner)
+        if [[ -n "$SCANNER_VERSION" ]]; then
+          args+=(--version "$SCANNER_VERSION")
+        fi
+        dotnet tool install "${args[@]}" || dotnet tool update "${args[@]}"
+        echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+        export PATH="$HOME/.dotnet/tools:$PATH"
+        # Not "dotnet-sonarscanner --version": recent scanner versions treat a
+        # missing begin/end argument as an error and exit 1.
+        command -v dotnet-sonarscanner
+
+    - name: Analyse with Sonar (begin)
+      if: ${{ inputs.phase == 'begin' }}
+      shell: bash
+      env:
+        SONAR_TOKEN: ${{ inputs.token }}
+        PROJECT_KEY: ${{ inputs.project-key }}
+        ORGANIZATION: ${{ inputs.organization }}
+        HOST_URL: ${{ inputs.host-url }}
+        COVERAGE_REPORTS: ${{ inputs.coverage-reports }}
+        QUALITY_GATE_WAIT: ${{ inputs.quality-gate-wait }}
+        EXTRA_ARGS: ${{ inputs.extra-args }}
+      run: |
+        set -euo pipefail
+        args=(begin "/k:${PROJECT_KEY}")
+        if [[ -n "$ORGANIZATION" ]]; then args+=("/o:${ORGANIZATION}"); fi
+        args+=("/d:sonar.host.url=${HOST_URL}" "/d:sonar.login=${SONAR_TOKEN}")
+        if [[ -n "$COVERAGE_REPORTS" ]]; then
+          args+=("/d:sonar.cs.opencover.reportsPaths=${COVERAGE_REPORTS}")
+        fi
+        if [[ "$QUALITY_GATE_WAIT" == "true" ]]; then
+          args+=("/d:sonar.qualitygate.wait=true")
+        fi
+        if [[ -n "$EXTRA_ARGS" ]]; then
+          read -r -a extra <<< "$EXTRA_ARGS"
+          args+=("${extra[@]}")
+        fi
+        dotnet-sonarscanner "${args[@]}"
+
+    - name: Analyse with Sonar (end)
+      if: ${{ inputs.phase == 'end' }}
+      shell: bash
+      env:
+        SONAR_TOKEN: ${{ inputs.token }}
+        EXTRA_ARGS: ${{ inputs.end-args }}
+      run: |
+        set -euo pipefail
+        args=(end "/d:sonar.login=${SONAR_TOKEN}")
+        if [[ -n "$EXTRA_ARGS" ]]; then
+          read -r -a extra <<< "$EXTRA_ARGS"
+          args+=("${extra[@]}")
+        fi
+        dotnet-sonarscanner "${args[@]}"

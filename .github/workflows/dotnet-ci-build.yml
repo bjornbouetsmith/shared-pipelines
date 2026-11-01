@@ -199,313 +199,133 @@ jobs:
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     outputs:
-      target: ${{ steps.resolve.outputs.target }}
+      target: ${{ steps.restore.outputs.target }}
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
     steps:
-      - name: Check out with full history for Sonar
-        if: ${{ inputs.sonar }}
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
       - name: Check out
-        if: ${{ !inputs.sonar }}
-        uses: actions/checkout@v7
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/checkout@v1.2.0
+        with:
+          full-history: ${{ inputs.sonar }}
 
       - name: Set commit status to pending
         if: ${{ inputs.set-commit-status }}
-        env:
-          STATUS_TOKEN: ${{ github.token }}
-          STATUS_CONTEXT: ${{ inputs.status-context }}
-          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          REPOSITORY: ${{ github.repository }}
-          COMMIT_SHA: ${{ github.sha }}
-          API_URL: ${{ github.api_url }}
-        run: |
-          set -euo pipefail
-          payload="$(jq -nc --arg url "$TARGET_URL" --arg context "$STATUS_CONTEXT" \
-            '{state: "pending", target_url: $url, description: "The build is pending!", context: $context}')"
-          curl --fail-with-body -sS -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $STATUS_TOKEN" \
-            "$API_URL/repos/${REPOSITORY}/statuses/${COMMIT_SHA}" -d "$payload"
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.2.0
+        with:
+          state: pending
+          context: ${{ inputs.status-context }}
+          description: The build is pending!
 
       - name: Set quality gate status to pending
         if: ${{ inputs.sonar && inputs.sonar-publish-status }}
-        env:
-          STATUS_TOKEN: ${{ github.token }}
-          STATUS_CONTEXT: ${{ inputs.sonar-status-context }}
-          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          REPOSITORY: ${{ github.repository }}
-          COMMIT_SHA: ${{ github.sha }}
-          API_URL: ${{ github.api_url }}
-        run: |
-          set -euo pipefail
-          payload="$(jq -nc --arg url "$TARGET_URL" --arg context "$STATUS_CONTEXT" \
-            '{state: "pending", target_url: $url, description: "The quality gate is pending!", context: $context}')"
-          curl --fail-with-body -sS -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $STATUS_TOKEN" \
-            "$API_URL/repos/${REPOSITORY}/statuses/${COMMIT_SHA}" -d "$payload"
-
-      - name: Validate Sonar inputs
-        if: ${{ inputs.sonar }}
-        env:
-          PROJECT_KEY: ${{ inputs.sonar-project-key }}
-          HOST_URL: ${{ inputs.sonar-host-url }}
-          SONAR_TOKEN: ${{ secrets.sonar-token }}
-        run: |
-          set -euo pipefail
-          missing=0
-          if [[ -z "$PROJECT_KEY" ]]; then
-            echo "::error title=sonar-project-key missing::The 'sonar' input is enabled but 'sonar-project-key' is empty."
-            missing=1
-          fi
-          if [[ -z "$HOST_URL" ]]; then
-            echo "::error title=sonar-host-url missing::The 'sonar' input is enabled but 'sonar-host-url' is empty."
-            missing=1
-          fi
-          if [[ -z "$SONAR_TOKEN" ]]; then
-            echo "::error title=sonar-token missing::The 'sonar' input is enabled but the 'sonar-token' secret is empty. Add the token to the calling repository and pass it as the sonar-token secret. 'secrets: inherit' only forwards secrets under their own names, so a secret called SONAR_TOKEN has to be mapped explicitly."
-            missing=1
-          fi
-          if (( missing != 0 )); then
-            exit 1
-          fi
-
-      - name: Set up .NET from global.json
-        if: ${{ inputs.global-json-file != '' }}
-        uses: actions/setup-dotnet@v6
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.2.0
         with:
-          global-json-file: ${{ inputs.global-json-file }}
+          state: pending
+          context: ${{ inputs.sonar-status-context }}
+          description: The quality gate is pending!
 
-      - name: Set up .NET
-        if: ${{ inputs.global-json-file == '' }}
-        uses: actions/setup-dotnet@v6
+      - name: Set up .NET and NuGet
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/setup-dotnet@v1.2.0
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
+          global-json-file: ${{ inputs.global-json-file }}
+          cache: ${{ inputs.cache }}
+          nuget-feed-owner: ${{ inputs.nuget-feed-owner }}
+          nuget-token: ${{ secrets.nuget-token }}
 
-      - name: Set up JDK for Sonar
+      - name: Prepare Sonar analysis
         if: ${{ inputs.sonar }}
-        uses: actions/setup-java@v6
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/sonar@v1.2.0
         with:
+          phase: setup
+          token: ${{ secrets.sonar-token }}
+          host-url: ${{ inputs.sonar-host-url }}
+          project-key: ${{ inputs.sonar-project-key }}
           java-version: ${{ inputs.sonar-java-version }}
-          distribution: ${{ inputs.sonar-java-distribution }}
-
-      - name: Install Sonar scanner
-        if: ${{ inputs.sonar }}
-        env:
-          SCANNER_VERSION: ${{ inputs.sonar-scanner-version }}
-        run: |
-          set -euo pipefail
-          args=(--global dotnet-sonarscanner)
-          if [[ -n "$SCANNER_VERSION" ]]; then
-            args+=(--version "$SCANNER_VERSION")
-          fi
-          dotnet tool install "${args[@]}" || dotnet tool update "${args[@]}"
-          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
-          export PATH="$HOME/.dotnet/tools:$PATH"
-          # Not "dotnet-sonarscanner --version": recent scanner versions treat a
-          # missing begin/end argument as an error and exit 1.
-          command -v dotnet-sonarscanner
-
-      - name: Restore NuGet cache
-        if: ${{ inputs.cache }}
-        uses: actions/cache@v6
-        with:
-          path: ~/.nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json', '**/Directory.Packages.props', '**/*.csproj', '**/global.json') }}
-          restore-keys: |
-            ${{ runner.os }}-nuget-
-
-      - name: Add GitHub Packages NuGet source
-        if: ${{ inputs.nuget-feed-owner != '' }}
-        env:
-          FEED_OWNER: ${{ inputs.nuget-feed-owner }}
-          FEED_USER: ${{ github.actor }}
-          FEED_TOKEN: ${{ secrets.nuget-token || github.token }}
-        run: |
-          set -euo pipefail
-          dotnet nuget add source \
-            --name github \
-            --username "$FEED_USER" \
-            --password "$FEED_TOKEN" \
-            --store-password-in-clear-text \
-            "https://nuget.pkg.github.com/${FEED_OWNER}/index.json"
-
-      - name: Resolve build target
-        id: resolve
-        env:
-          INPUT_SOLUTION: ${{ inputs.solution }}
-          WORKING_DIRECTORY: ${{ inputs.working-directory }}
-        run: |
-          set -euo pipefail
-          target="$INPUT_SOLUTION"
-          if [[ -z "$target" ]]; then
-            target="$(find . -maxdepth 1 -type f \( -name '*.slnx' -o -name '*.sln' \) -print -quit)"
-            target="${target#./}"
-          fi
-          if [[ -z "$target" ]]; then
-            echo "::error title=No solution found::Set the 'solution' input or add a .sln/.slnx file to '$WORKING_DIRECTORY'."
-            exit 1
-          fi
-          echo "Building '$target'"
-          echo "target=$target" >> "$GITHUB_OUTPUT"
+          java-distribution: ${{ inputs.sonar-java-distribution }}
+          scanner-version: ${{ inputs.sonar-scanner-version }}
 
       - name: Restore dependencies
-        env:
-          TARGET: ${{ steps.resolve.outputs.target }}
-          ARGS: ${{ inputs.restore-args }}
-        run: |
-          set -euo pipefail
-          args=()
-          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
-          dotnet restore "$TARGET" "${args[@]}"
+        id: restore
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/restore@v1.2.0
+        with:
+          solution: ${{ inputs.solution }}
+          working-directory: ${{ inputs.working-directory }}
+          restore-args: ${{ inputs.restore-args }}
 
       - name: Analyse with Sonar (begin)
         if: ${{ inputs.sonar }}
-        env:
-          SONAR_TOKEN: ${{ secrets.sonar-token }}
-          PROJECT_KEY: ${{ inputs.sonar-project-key }}
-          ORGANIZATION: ${{ inputs.sonar-organization }}
-          HOST_URL: ${{ inputs.sonar-host-url }}
-          COVERAGE_REPORTS: ${{ inputs.sonar-coverage-reports }}
-          QUALITY_GATE_WAIT: ${{ inputs.sonar-quality-gate-wait }}
-          EXTRA_ARGS: ${{ inputs.sonar-extra-args }}
-        run: |
-          set -euo pipefail
-          args=(begin "/k:${PROJECT_KEY}")
-          if [[ -n "$ORGANIZATION" ]]; then args+=("/o:${ORGANIZATION}"); fi
-          args+=("/d:sonar.host.url=${HOST_URL}" "/d:sonar.login=${SONAR_TOKEN}")
-          if [[ -n "$COVERAGE_REPORTS" ]]; then
-            args+=("/d:sonar.cs.opencover.reportsPaths=${COVERAGE_REPORTS}")
-          fi
-          if [[ "$QUALITY_GATE_WAIT" == "true" ]]; then
-            args+=("/d:sonar.qualitygate.wait=true")
-          fi
-          if [[ -n "$EXTRA_ARGS" ]]; then
-            read -r -a extra <<< "$EXTRA_ARGS"
-            args+=("${extra[@]}")
-          fi
-          dotnet-sonarscanner "${args[@]}"
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/sonar@v1.2.0
+        with:
+          phase: begin
+          token: ${{ secrets.sonar-token }}
+          host-url: ${{ inputs.sonar-host-url }}
+          project-key: ${{ inputs.sonar-project-key }}
+          organization: ${{ inputs.sonar-organization }}
+          coverage-reports: ${{ inputs.sonar-coverage-reports }}
+          quality-gate-wait: ${{ inputs.sonar-quality-gate-wait }}
+          extra-args: ${{ inputs.sonar-extra-args }}
 
       - name: Build
-        env:
-          TARGET: ${{ steps.resolve.outputs.target }}
-          CONFIGURATION: ${{ inputs.configuration }}
-          ARGS: ${{ inputs.build-args }}
-        run: |
-          set -euo pipefail
-          args=()
-          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
-          dotnet build "$TARGET" --no-restore --configuration "$CONFIGURATION" "${args[@]}"
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/build@v1.2.0
+        with:
+          target: ${{ steps.restore.outputs.target }}
+          working-directory: ${{ inputs.working-directory }}
+          configuration: ${{ inputs.configuration }}
+          build-args: ${{ inputs.build-args }}
 
       - name: Test
         if: ${{ inputs.run-tests }}
-        env:
-          TARGET: ${{ steps.resolve.outputs.target }}
-          TEST_PROJECT: ${{ inputs.test-project }}
-          CONFIGURATION: ${{ inputs.configuration }}
-          ARGS: ${{ inputs.test-args }}
-        run: |
-          set -euo pipefail
-          args=()
-          if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
-          subject="${TEST_PROJECT:-$TARGET}"
-          dotnet test "$subject" \
-            --no-build \
-            --configuration "$CONFIGURATION" \
-            --logger "trx;LogFileName=results.trx" \
-            --results-directory artifacts/test-results \
-            "${args[@]}"
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/test@v1.2.0
+        with:
+          target: ${{ steps.restore.outputs.target }}
+          test-project: ${{ inputs.test-project }}
+          working-directory: ${{ inputs.working-directory }}
+          configuration: ${{ inputs.configuration }}
+          test-args: ${{ inputs.test-args }}
+          trx: 'true'
+          results-directory: artifacts/test-results
 
       - name: Set commit status to success
         if: ${{ inputs.set-commit-status && success() }}
-        env:
-          STATUS_TOKEN: ${{ github.token }}
-          STATUS_CONTEXT: ${{ inputs.status-context }}
-          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          REPOSITORY: ${{ github.repository }}
-          COMMIT_SHA: ${{ github.sha }}
-          API_URL: ${{ github.api_url }}
-        run: |
-          set -euo pipefail
-          payload="$(jq -nc --arg url "$TARGET_URL" --arg context "$STATUS_CONTEXT" \
-            '{state: "success", target_url: $url, description: "The build succeeded!", context: $context}')"
-          curl --fail-with-body -sS -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $STATUS_TOKEN" \
-            "$API_URL/repos/${REPOSITORY}/statuses/${COMMIT_SHA}" -d "$payload"
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.2.0
+        with:
+          state: success
+          context: ${{ inputs.status-context }}
+          description: The build succeeded!
 
       - name: Set commit status to failure
         if: ${{ inputs.set-commit-status && failure() }}
-        env:
-          STATUS_TOKEN: ${{ github.token }}
-          STATUS_CONTEXT: ${{ inputs.status-context }}
-          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          REPOSITORY: ${{ github.repository }}
-          COMMIT_SHA: ${{ github.sha }}
-          API_URL: ${{ github.api_url }}
-        run: |
-          set -euo pipefail
-          payload="$(jq -nc --arg url "$TARGET_URL" --arg context "$STATUS_CONTEXT" \
-            '{state: "failure", target_url: $url, description: "The build failed!", context: $context}')"
-          curl --fail-with-body -sS -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $STATUS_TOKEN" \
-            "$API_URL/repos/${REPOSITORY}/statuses/${COMMIT_SHA}" -d "$payload"
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.2.0
+        with:
+          state: failure
+          context: ${{ inputs.status-context }}
+          description: The build failed!
 
       - name: Analyse with Sonar (end)
         if: ${{ inputs.sonar }}
-        env:
-          SONAR_TOKEN: ${{ secrets.sonar-token }}
-          EXTRA_ARGS: ${{ inputs.sonar-end-args }}
-        run: |
-          set -euo pipefail
-          args=(end "/d:sonar.login=${SONAR_TOKEN}")
-          if [[ -n "$EXTRA_ARGS" ]]; then
-            read -r -a extra <<< "$EXTRA_ARGS"
-            args+=("${extra[@]}")
-          fi
-          dotnet-sonarscanner "${args[@]}"
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/sonar@v1.2.0
+        with:
+          phase: end
+          token: ${{ secrets.sonar-token }}
+          end-args: ${{ inputs.sonar-end-args }}
 
       - name: Set quality gate status to success
         if: ${{ inputs.sonar && inputs.sonar-publish-status && success() }}
-        env:
-          STATUS_TOKEN: ${{ github.token }}
-          STATUS_CONTEXT: ${{ inputs.sonar-status-context }}
-          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          REPOSITORY: ${{ github.repository }}
-          COMMIT_SHA: ${{ github.sha }}
-          API_URL: ${{ github.api_url }}
-        run: |
-          set -euo pipefail
-          payload="$(jq -nc --arg url "$TARGET_URL" --arg context "$STATUS_CONTEXT" \
-            '{state: "success", target_url: $url, description: "The quality gate succeeded!", context: $context}')"
-          curl --fail-with-body -sS -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $STATUS_TOKEN" \
-            "$API_URL/repos/${REPOSITORY}/statuses/${COMMIT_SHA}" -d "$payload"
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.2.0
+        with:
+          state: success
+          context: ${{ inputs.sonar-status-context }}
+          description: The quality gate succeeded!
 
       - name: Set quality gate status to failure
         if: ${{ inputs.sonar && inputs.sonar-publish-status && failure() }}
-        env:
-          STATUS_TOKEN: ${{ github.token }}
-          STATUS_CONTEXT: ${{ inputs.sonar-status-context }}
-          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          REPOSITORY: ${{ github.repository }}
-          COMMIT_SHA: ${{ github.sha }}
-          API_URL: ${{ github.api_url }}
-        run: |
-          set -euo pipefail
-          payload="$(jq -nc --arg url "$TARGET_URL" --arg context "$STATUS_CONTEXT" \
-            '{state: "failure", target_url: $url, description: "The quality gate failed!", context: $context}')"
-          curl --fail-with-body -sS -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $STATUS_TOKEN" \
-            "$API_URL/repos/${REPOSITORY}/statuses/${COMMIT_SHA}" -d "$payload"
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.2.0
+        with:
+          state: failure
+          context: ${{ inputs.sonar-status-context }}
+          description: The quality gate failed!
 
       - name: Upload test results
         if: ${{ inputs.upload-test-results && always() }}

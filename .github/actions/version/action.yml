@@ -1,0 +1,131 @@
+# Read or increment the <Version> element used by increment-version.
+#
+# `read` only parses the current version and computes the tag. `increment`
+# additionally bumps the requested part, computes the release branch and fails
+# when the target tag or branch already exists on origin.
+name: Read or increment version
+description: Read the version file or increment it and compute the release branch and tag.
+
+inputs:
+  operation:
+    description: 'read or increment.'
+    required: true
+  version-file:
+    description: 'File holding exactly one <Version>x.y.z</Version> element.'
+    required: false
+    default: 'Directory.Build.props'
+  version-part:
+    description: 'patch, minor or major. Only used by the increment operation.'
+    required: false
+    default: 'patch'
+  branch-prefix:
+    description: 'Prefix of the release branch. Only used by the increment operation.'
+    required: false
+    default: 'release/v'
+  tag-prefix:
+    description: 'Prefix of the release tag.'
+    required: false
+    default: 'v'
+
+outputs:
+  version:
+    description: 'New version for increment, current version for read.'
+    value: ${{ steps.increment.outputs.new_version || steps.read.outputs.version }}
+  current_version:
+    description: 'Version found in the version file.'
+    value: ${{ steps.read.outputs.current_version }}
+  new_version:
+    description: 'Incremented version (increment operation only).'
+    value: ${{ steps.increment.outputs.new_version }}
+  branch:
+    description: 'Release branch (increment operation only).'
+    value: ${{ steps.increment.outputs.branch }}
+  tag:
+    description: 'Release tag for the version.'
+    value: ${{ steps.increment.outputs.tag || steps.read.outputs.tag }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate operation
+      shell: bash
+      env:
+        OPERATION: ${{ inputs.operation }}
+      run: |
+        set -euo pipefail
+        case "$OPERATION" in
+          read|increment) ;;
+          *)
+            echo "::error title=Invalid version operation::operation must be read or increment (got '$OPERATION')."
+            exit 1
+            ;;
+        esac
+
+    - name: Read version
+      id: read
+      shell: bash
+      working-directory: .
+      env:
+        VERSION_FILE: ${{ inputs.version-file }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+      run: |
+        set -euo pipefail
+        if [[ ! -f "$VERSION_FILE" ]]; then
+          echo "::error title=Version file not found::'$VERSION_FILE' does not exist."
+          exit 1
+        fi
+        count="$(grep -o '<Version>' "$VERSION_FILE" | wc -l || true)"
+        if [[ "$count" -ne 1 ]]; then
+          echo "::error title=Ambiguous version::Expected exactly one <Version> element in '$VERSION_FILE', found $count."
+          exit 1
+        fi
+        version="$(sed -nE 's:.*<Version>([0-9]+\.[0-9]+\.[0-9]+)</Version>.*:\1:p' "$VERSION_FILE")"
+        if [[ -z "$version" ]]; then
+          echo "::error title=Invalid version::No <Version>x.y.z</Version> element found in '$VERSION_FILE'."
+          exit 1
+        fi
+        tag="${TAG_PREFIX}${version}"
+        echo "Version in $VERSION_FILE: $version (tag $tag)"
+        echo "current_version=$version" >> "$GITHUB_OUTPUT"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+    - name: Increment version
+      id: increment
+      if: ${{ inputs.operation == 'increment' }}
+      shell: bash
+      working-directory: .
+      env:
+        VERSION_FILE: ${{ inputs.version-file }}
+        VERSION_PART: ${{ inputs.version-part }}
+        CURRENT_VERSION: ${{ steps.read.outputs.current_version }}
+        BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+      run: |
+        set -euo pipefail
+        IFS=. read -r major minor patch <<< "$CURRENT_VERSION"
+        part="${VERSION_PART,,}"
+        case "$part" in
+          major) major=$((major + 1)); minor=0; patch=0 ;;
+          minor) minor=$((minor + 1)); patch=0 ;;
+          patch) patch=$((patch + 1)) ;;
+        esac
+
+        new_version="$major.$minor.$patch"
+        branch="${BRANCH_PREFIX}${new_version}"
+        tag="${TAG_PREFIX}${new_version}"
+
+        if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+          echo "::error title=Tag already exists::Tag '$tag' already exists on origin."
+          exit 1
+        fi
+        if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+          echo "::error title=Branch already exists::Branch '$branch' already exists on origin; delete it or use another version part."
+          exit 1
+        fi
+
+        echo "Current version: $CURRENT_VERSION"
+        echo "Release version: $new_version on branch $branch (tag $tag)"
+        echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
+        echo "branch=$branch" >> "$GITHUB_OUTPUT"
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
