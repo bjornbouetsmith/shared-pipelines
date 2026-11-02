@@ -330,24 +330,67 @@ requirements are the same as [`dotnet-ci-build.yml`](#dotnet-ci-buildyml).
 
 ## `release-nuget.yml`
 
+Packs every packable project in the solution into `artifacts/packages` and pushes
+the `.nupkg` files. GitHub Packages is on by default and uses
+`github.repository_owner` as the feed owner; nuget.org is opt-in.
+
+> **nuget.org publishing from a reusable workflow:** OIDC trusted publishing
+> currently only works when `NuGet/login` runs in the workflow file registered
+> in the nuget.org policy. When this reusable workflow is called from another
+> repository, `NuGet/login` runs in `shared-pipelines`, so nuget.org sees
+> `job_workflow_ref` as `bjornbouetsmith/shared-pipelines/...` and rejects the
+> token exchange with HTTP 401. Until
+> [NuGet/login#6](https://github.com/NuGet/login/issues/6) and
+> [NuGetGallery#11000](https://github.com/NuGet/NuGetGallery/issues/11000) are
+> resolved, the only way to publish to nuget.org while keeping everything in
+> the shared pipeline is to use a nuget.org API key. See
+> [What you need to setup](#what-you-need-to-setup).
+
 ```yaml
 jobs:
   release:
     permissions:
       contents: read
       packages: write
-      id-token: write
     uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.3.0
     with:
       solution: Source/MyApp.slnx
       allowed-actors: my-github-user
       publish-nuget-org: true
-      nuget-org-user: my-nuget-account
+    secrets:
+      nuget-org-api-key: ${{ secrets.NUGET_ORG_API_KEY }}
 ```
 
-Packs every packable project in the solution into `artifacts/packages` and pushes
-the `.nupkg` files. GitHub Packages is on by default and uses
-`github.repository_owner` as the feed owner; nuget.org is opt-in.
+### What you need to setup
+
+1. **Create a nuget.org API key.** On nuget.org, open **API Keys** and create a
+   new key:
+   - Scope: **Push new packages and package versions**.
+   - Glob pattern: restrict it to the package(s) you publish, for example
+     `ROOT.Etcd.Configuration`, or use `*` if you prefer.
+   - Set an expiry date you are comfortable with.
+2. **Add the key as a GitHub Actions secret.** In the calling repository, go to
+   **Settings → Secrets and variables → Actions → New repository secret**:
+   - Name: `NUGET_ORG_API_KEY`
+   - Value: the key created above.
+3. **Pass the secret to the shared workflow.** Add this to the calling job:
+
+   ```yaml
+   secrets:
+     nuget-org-api-key: ${{ secrets.NUGET_ORG_API_KEY }}
+   ```
+
+When `nuget-org-api-key` is set, the workflow skips the OIDC login and uses the
+API key for `dotnet nuget push`.
+
+### OIDC / Trusted Publishing
+
+OIDC (`nuget-org-user` plus `id-token: write`) only works when `NuGet/login`
+executes in the workflow file named in the nuget.org trusted publishing policy.
+For this shared reusable workflow, that file is in `shared-pipelines`, not in
+the calling repository, so cross-repository callers get HTTP 401 from the token
+exchange. OIDC remains usable if the release steps are copied into the calling
+repository's own workflow file and that file is registered in the policy.
 
 ### Inputs
 
@@ -371,7 +414,7 @@ the `.nupkg` files. GitHub Packages is on by default and uses
 | `nuget-feed-owner` | string | `''` | GitHub Packages owner. Empty = `github.repository_owner`. |
 | `publish-github-packages` | boolean | `true` | Push to GitHub Packages. |
 | `publish-nuget-org` | boolean | `false` | Push to nuget.org. |
-| `nuget-org-user` | string | `''` | nuget.org profile, required for OIDC. |
+| `nuget-org-user` | string | `''` | nuget.org profile, required for OIDC. Not needed when `nuget-org-api-key` is set. |
 | `nuget-org-source` | string | `'https://api.nuget.org/v3/index.json'` | nuget.org feed. |
 | `push-args` | string | `'--skip-duplicate'` | Extra `dotnet nuget push` arguments. |
 
@@ -380,7 +423,7 @@ the `.nupkg` files. GitHub Packages is on by default and uses
 | Secret | Required | Description |
 |---|---|---|
 | `nuget-token` | no | GitHub Packages token. Defaults to `github.token`. |
-| `nuget-org-api-key` | no | Classic nuget.org key. When empty the workflow uses OIDC and `NuGet/login`. |
+| `nuget-org-api-key` | no | Classic nuget.org key. Required for nuget.org publishing from cross-repository reusable workflows; when empty the workflow uses OIDC and `NuGet/login`. |
 
 ### Outputs
 
@@ -396,10 +439,13 @@ Grant these in the calling job:
 |---|---|
 | `contents: read` | checking out the repository |
 | `packages: write` | `publish-github-packages` |
-| `id-token: write` | `publish-nuget-org` (OIDC login) |
+| `id-token: write` | `publish-nuget-org` with OIDC (not needed when using `nuget-org-api-key`) |
 
-Publishing to nuget.org also needs a **trusted publishing policy** on nuget.org
-pointing at this workflow file.
+Publishing to nuget.org with OIDC also needs a **trusted publishing policy** on
+nuget.org pointing at the workflow file that runs `NuGet/login`. Because that
+file is in `shared-pipelines` when this reusable workflow is called from another
+repository, cross-repository callers should use the `nuget-org-api-key` secret
+instead. See [What you need to setup](#what-you-need-to-setup).
 
 ---
 
@@ -522,8 +568,10 @@ Grant these in the calling job:
    pushes, tags or opens PRs.
 3. **Allow GitHub Actions to create and approve pull requests** for
    `increment-version`.
-4. For `release-nuget` with `publish-nuget-org`: a trusted publishing policy on
-   nuget.org for the exact repository and workflow file.
+4. For `release-nuget` with `publish-nuget-org`: add a `NUGET_ORG_API_KEY`
+   repository secret and pass it as `nuget-org-api-key`. A trusted publishing
+   policy is only useful for OIDC when `NuGet/login` runs in the registered
+   workflow file in the same repository.
 
 ## Consuming these pipelines from a private repository
 
