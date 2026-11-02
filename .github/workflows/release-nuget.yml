@@ -7,16 +7,19 @@
 #       permissions:
 #         contents: read
 #         packages: write    # required to push to GitHub Packages
-#         id-token: write    # required for nuget.org OIDC login
-#       uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.1.0
+#       uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.4.0
 #       with:
 #         solution: Source/MyApp.slnx
-#         publish-nuget-org: true
-#         nuget-org-user: my-nuget-account
+#         publish-github-packages: true
+#         publish-nuget-org: false
 #
 # By default the workflow packs every packable project in the solution and
 # pushes the packages to GitHub Packages of github.repository_owner.
-# nuget.org publishing is opt-in and uses OIDC (no long-lived API key needed).
+# nuget.org publishing is opt-in. Because nuget.org validates the workflow file
+# that requests the OIDC token, publishing to nuget.org from another repository
+# should use the public publish-nuget composite action in a caller job:
+#   .github/actions/publish-nuget/action.yml
+# Passing the nuget-org-api-key secret to this workflow is the API-key fallback.
 #
 # Runner requirement: the steps are bash, so runs-on must be Linux or macOS.
 # Full input/secret/output reference: README.md
@@ -169,7 +172,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
     steps:
       - name: Check out
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/checkout@v1.3.0
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/checkout@v1.4.0
 
       - name: Validate triggering actor
         if: ${{ inputs.allowed-actors != '' }}
@@ -207,7 +210,7 @@ jobs:
           fi
 
       - name: Set up .NET and NuGet
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/setup-dotnet@v1.3.0
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/setup-dotnet@v1.4.0
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
           global-json-file: ${{ inputs.global-json-file }}
@@ -217,14 +220,14 @@ jobs:
 
       - name: Restore dependencies
         id: restore
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/restore@v1.3.0
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/restore@v1.4.0
         with:
           solution: ${{ inputs.solution }}
           working-directory: ${{ inputs.working-directory }}
           restore-args: ${{ inputs.restore-args }}
 
       - name: Build
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/build@v1.3.0
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/build@v1.4.0
         with:
           target: ${{ steps.restore.outputs.target }}
           working-directory: ${{ inputs.working-directory }}
@@ -233,7 +236,7 @@ jobs:
 
       - name: Test
         if: ${{ inputs.run-tests }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/test@v1.3.0
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/test@v1.4.0
         with:
           target: ${{ steps.restore.outputs.target }}
           test-project: ${{ inputs.test-project }}
