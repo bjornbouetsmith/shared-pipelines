@@ -8,7 +8,7 @@
 #         contents: read
 #         packages: read          # only needed when nuget-feed-owner is set
 #         statuses: write         # only needed for the commit status options
-#       uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.1.0
+#       uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.4.0
 #       with:
 #         solution: Source/MyApp.slnx
 #       secrets: inherit
@@ -278,7 +278,7 @@ jobs:
 
       - name: Test
         if: ${{ inputs.run-tests }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/test@v1.3.2
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/test@v1.4.0
         with:
           target: ${{ steps.restore.outputs.target }}
           test-project: ${{ inputs.test-project }}

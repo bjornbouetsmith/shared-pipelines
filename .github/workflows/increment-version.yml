@@ -25,7 +25,7 @@
 #       permissions:
 #         contents: write
 #         pull-requests: write   # needed to open the release pull request
-#       uses: bjornbouetsmith/shared-pipelines/.github/workflows/increment-version.yml@v1.1.0
+#       uses: bjornbouetsmith/shared-pipelines/.github/workflows/increment-version.yml@v1.4.0
 #       with:
 #         version-part: ${{ inputs.version_part || 'patch' }}
 #       secrets: inherit
@@ -219,7 +219,7 @@ jobs:
 
       - name: Determine release version
         id: version
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/version@v1.3.3
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/version@v1.4.0
         with:
           operation: increment
           version-file: ${{ inputs.version-file }}

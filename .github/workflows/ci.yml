@@ -1,0 +1,257 @@
+# CI for the shared workflows and composite actions themselves.
+#
+# The checks have three layers:
+#   1. static: actionlint (with shellcheck/pyflakes), action-validator and the
+#      repository-specific checks in tests/validate-workflows.py;
+#   2. unit-ish: the composite actions that can run without credentials or
+#      repository writes are called directly against a tiny .NET fixture, so
+#      local action changes are exercised before a release;
+#   3. end-to-end: the reusable CI workflows are called from this repository
+#      with the same fixture, so their orchestration is exercised too.
+#
+# Actions referenced by the reusable workflows are pinned to the current
+# release tag. A change to a composite action is therefore covered by the
+# direct action job; a change to a reusable workflow is covered by the
+# end-to-end job. Publishing, Sonar and version-pushing paths are not run here
+# because they need real credentials or mutate the repository; the composite
+# actions behind them are still validated and their failure paths are tested.
+
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint and validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Lint workflows
+        uses: raven-actions/actionlint@v2
+
+      - name: Validate action and workflow schemas
+        uses: mpalmer/action-validator@v0.9.0
+
+      - name: Validate repository conventions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/validate-venv"
+          "$RUNNER_TEMP/validate-venv/bin/pip" install \
+            --disable-pip-version-check --quiet pyyaml==6.0.3
+          "$RUNNER_TEMP/validate-venv/bin/python" tests/validate-workflows.py
+
+  actions:
+    name: Composite actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Check out with the local checkout action
+        uses: ./.github/actions/checkout
+        with:
+          full-history: 'true'
+
+      - name: Verify the checkout action fetched the full history
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
+            echo "::error title=Shallow checkout::full-history did not fetch the full history."
+            exit 1
+          fi
+
+      - name: Set up .NET with the local action
+        uses: ./.github/actions/setup-dotnet
+        with:
+          dotnet-version: '10.0.x'
+          cache: 'true'
+
+      - name: Restore with the local action
+        id: restore
+        uses: ./.github/actions/restore
+        with:
+          working-directory: tests/fixtures/dotnet
+
+      - name: Verify the restore output
+        shell: bash
+        env:
+          TARGET: ${{ steps.restore.outputs.target }}
+        run: |
+          set -euo pipefail
+          if [[ "$TARGET" != "Sample.sln" ]]; then
+            echo "::error title=Unexpected target::Expected 'Sample.sln', got '$TARGET'."
+            exit 1
+          fi
+
+      - name: Build with the local action
+        uses: ./.github/actions/build
+        with:
+          target: ${{ steps.restore.outputs.target }}
+          working-directory: tests/fixtures/dotnet
+
+      - name: Test with the local action
+        uses: ./.github/actions/test
+        with:
+          target: ${{ steps.restore.outputs.target }}
+          working-directory: tests/fixtures/dotnet
+
+      - name: Verify the test action produced coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -s "$GITHUB_WORKSPACE/coverage.opencover.xml" ]]; then
+            echo "::error title=Missing coverage::The test action did not produce coverage.opencover.xml."
+            exit 1
+          fi
+
+      - name: Read the version with the local action
+        id: version_read
+        uses: ./.github/actions/version
+        with:
+          operation: read
+          version-file: tests/fixtures/dotnet/Directory.Build.props
+
+      - name: Verify the version output
+        shell: bash
+        env:
+          VERSION: ${{ steps.version_read.outputs.version }}
+          TAG: ${{ steps.version_read.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" == "0.0.0" ]]
+          [[ "$TAG" == "v0.0.0" ]]
+
+      - name: Create a throwaway version file
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '<Project><PropertyGroup><Version>999.0.0</Version></PropertyGroup></Project>\n' \
+            > "$RUNNER_TEMP/version.props"
+
+      - name: Increment the version with the local action
+        id: version_increment
+        uses: ./.github/actions/version
+        with:
+          operation: increment
+          version-file: ${{ runner.temp }}/version.props
+          version-part: patch
+          branch-prefix: selftest-${{ github.run_id }}/v
+
+      - name: Verify the incremented version
+        shell: bash
+        env:
+          NEW_VERSION: ${{ steps.version_increment.outputs.new_version }}
+          BRANCH: ${{ steps.version_increment.outputs.branch }}
+          TAG: ${{ steps.version_increment.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$NEW_VERSION" == "999.0.1" ]]
+          [[ "$BRANCH" == "selftest-${{ github.run_id }}/v999.0.1" ]]
+          [[ "$TAG" == "v999.0.1" ]]
+
+      - name: Validate version inputs with the local action
+        uses: ./.github/actions/validate-version-inputs
+        with:
+          mode: auto
+          version-part: patch
+
+      - name: An invalid mode must fail validation
+        id: invalid_mode
+        continue-on-error: true
+        uses: ./.github/actions/validate-version-inputs
+        with:
+          mode: not-a-mode
+          version-part: patch
+
+      - name: Verify invalid mode was rejected
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.invalid_mode.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ "$OUTCOME" != "failure" ]]; then
+            echo "::error title=Expected failure::An invalid mode should have failed, but the step concluded '$OUTCOME'."
+            exit 1
+          fi
+
+      - name: Sonar setup without a token must fail
+        id: sonar_without_token
+        continue-on-error: true
+        uses: ./.github/actions/sonar
+        with:
+          phase: setup
+          project-key: selftest
+
+      - name: Verify missing Sonar token was rejected
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.sonar_without_token.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ "$OUTCOME" != "failure" ]]; then
+            echo "::error title=Expected failure::Sonar setup without a token should have failed, but the step concluded '$OUTCOME'."
+            exit 1
+          fi
+
+      - name: Start Docker Compose with the local action
+        uses: ./.github/actions/docker-compose-up
+        with:
+          compose-files: tests/fixtures/docker/docker-compose.yml
+          project-name: selftest-${{ github.run_id }}
+
+      - name: Wait for Docker Compose with the local action
+        uses: ./.github/actions/docker-compose-wait
+        with:
+          urls: http://127.0.0.1:18080/
+          timeout-seconds: '60'
+          interval-seconds: '1'
+
+      - name: Stop Docker Compose with the local action
+        if: ${{ always() }}
+        uses: ./.github/actions/docker-compose-down
+        with:
+          compose-files: tests/fixtures/docker/docker-compose.yml
+          project-name: selftest-${{ github.run_id }}
+
+  dotnet-ci:
+    name: Reusable dotnet-ci-build workflow
+    permissions:
+      contents: read
+    uses: ./.github/workflows/dotnet-ci-build.yml
+    with:
+      solution: tests/fixtures/dotnet/Sample.sln
+      upload-test-results: true
+      artifact-name: dotnet-ci-selftest
+      test-args: '--filter FullyQualifiedName~CalculatorTests'
+
+  dotnet-docker-ci:
+    name: Reusable dotnet-docker-ci-build workflow
+    permissions:
+      contents: read
+    uses: ./.github/workflows/dotnet-docker-ci-build.yml
+    with:
+      solution: tests/fixtures/dotnet/Sample.sln
+      docker-compose-files: tests/fixtures/docker/docker-compose.yml
+      wait-for-urls: http://127.0.0.1:18080/
+      wait-timeout-seconds: 60
+      wait-interval-seconds: 1
+      upload-test-results: true
+      artifact-name: dotnet-docker-ci-selftest
+      test-args: '--filter FullyQualifiedName~CalculatorTests'

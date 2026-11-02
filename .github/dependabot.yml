@@ -1,0 +1,43 @@
+# Keep the actions used by the shared workflows and composite actions current.
+#
+# Dependabot's github-actions ecosystem scans .github/workflows when the
+# directory is "/", but it does not descend into .github/actions. Composite
+# actions therefore need one directory entry each. Add an entry here whenever
+# a new action is added under .github/actions; tests/validate-workflows.py
+# fails when the list and the directory contents drift apart.
+version: 2
+
+updates:
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+      - "/.github/actions/build"
+      - "/.github/actions/checkout"
+      - "/.github/actions/commit-status"
+      - "/.github/actions/docker-compose-down"
+      - "/.github/actions/docker-compose-up"
+      - "/.github/actions/docker-compose-wait"
+      - "/.github/actions/publish-nuget"
+      - "/.github/actions/restore"
+      - "/.github/actions/setup-dotnet"
+      - "/.github/actions/sonar"
+      - "/.github/actions/test"
+      - "/.github/actions/validate-version-inputs"
+      - "/.github/actions/version"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      # Minor and patch bumps of different actions can be verified together.
+      # Major bumps stay separate because they may need code changes.
+      github-actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

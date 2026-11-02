@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <!-- Exactly one <Version> element: the version action and the
+         increment-version workflow both rely on that invariant. -->
+    <Version>0.0.0</Version>
+  </PropertyGroup>
+</Project>

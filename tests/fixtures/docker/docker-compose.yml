@@ -1,0 +1,5 @@
+services:
+  echo:
+    image: nginx:alpine
+    ports:
+      - "127.0.0.1:18080:80"

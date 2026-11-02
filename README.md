@@ -59,6 +59,40 @@ so a single release pins the workflows and the actions they use together.
 | `v1.1.0` | SonarQube/SonarCloud option, pending/success/failure commit statuses |
 | `v1.0.0` | First release: reusable CI, release and versioning workflows |
 
+## Dependabot and CI
+
+[`.github/dependabot.yml`](.github/dependabot.yml) keeps every action used by
+these workflows and composite actions up to date. It checks weekly, groups
+minor/patch bumps into one pull request and leaves major bumps separate.
+
+Dependabot's `github-actions` ecosystem only scans `.github/workflows` for a
+root `directory: "/"` entry; it does not discover composite actions under
+`.github/actions` on its own. The configuration therefore lists the root and
+every action directory explicitly. **When you add a composite action, add its
+directory to `dependabot.yml`** — the validation step in CI fails if the list
+and the directory contents drift apart.
+
+CI runs on every push, pull request and manual dispatch:
+
+| Job | What it checks |
+|---|---|
+| `lint` | `actionlint` (with shellcheck), `action-validator`, and [`tests/validate-workflows.py`](tests/validate-workflows.py) |
+| `actions` | Calls the composite actions directly against a small .NET fixture: checkout, SDK/cache setup, restore, build, test, version, Docker Compose, and the input-validation failure paths |
+| `dotnet-ci` | Calls the local `dotnet-ci-build.yml` against the fixture |
+| `dotnet-docker-ci` | Calls the local `dotnet-docker-ci-build.yml` against the fixture and a tiny Compose stack |
+
+`tests/validate-workflows.py` also enforces that all references back into this
+repository use the same release tag, that every action is pinned to a version
+tag or commit SHA rather than a branch, and that every `with:`/`secrets:` key
+exists on the target action or reusable workflow. The fixtures live in
+[`tests/fixtures`](tests/fixtures).
+
+The publishing, Sonar and branch/tag mutation paths are not executed in CI:
+they need real credentials or would mutate the repository. The composite
+actions behind them are still schema-validated, and their input-validation
+failure paths are exercised. The fixtures are deliberately small, so the suite
+stays focused on the pipeline plumbing rather than on .NET test coverage.
+
 ## Requirements for every workflow
 
 - **Runner:** the steps are `bash`, so `runs-on` must be Linux or macOS. Windows

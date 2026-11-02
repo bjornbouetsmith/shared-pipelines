@@ -4,3 +4,10 @@
 
 /.vs
 /_ReSharper.Caches
+
+# Build output from the test fixtures
+__pycache__/
+tests/fixtures/**/[Bb]in/
+tests/fixtures/**/[Oo]bj/
+tests/fixtures/**/TestResults/
+coverage.opencover.xml
