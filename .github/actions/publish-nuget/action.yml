@@ -1,0 +1,114 @@
+# Publish already-packed NuGet packages to nuget.org using OIDC.
+#
+# This is a composite action, not a reusable workflow, on purpose. A composite
+# action runs as steps inside the *calling* job, so the OIDC token's
+# `job_workflow_ref` claim points at the caller's workflow file. That is the file
+# registered in the nuget.org Trusted Publishing policy. A reusable workflow
+# would run in its own workflow context and the claim would point at this
+# repository instead, which nuget.org rejects with HTTP 401.
+#
+# Call it from a job that has `id-token: write`:
+#
+#   publish:
+#     needs: build
+#     runs-on: ubuntu-latest
+#     permissions:
+#       contents: read
+#       id-token: write
+#     steps:
+#       - uses: bjornbouetsmith/shared-pipelines/.github/actions/publish-nuget@v1.4.0
+#         with:
+#           artifact-name: nuget-packages
+#           user: my-nuget-account
+
+name: Publish NuGet packages
+description: >-
+  Download a workflow artifact, authenticate with nuget.org using GitHub OIDC,
+  and publish the .nupkg files.
+
+inputs:
+  artifact-name:
+    description: 'Name of the workflow artifact containing the .nupkg files.'
+    required: false
+    default: 'nuget-packages'
+  user:
+    description: >-
+      nuget.org profile name of the trusted publishing policy creator.
+      This is the username passed to NuGet/login, not the package owner.
+    required: true
+  packages-directory:
+    description: 'Directory to download the artifact into and publish from.'
+    required: false
+    default: 'artifacts/packages'
+  dotnet-version:
+    description: '.NET SDK version used for dotnet nuget push.'
+    required: false
+    default: '10.0.x'
+  source:
+    description: 'nuget.org v3 feed to push to.'
+    required: false
+    default: 'https://api.nuget.org/v3/index.json'
+  push-args:
+    description: 'Extra arguments appended to dotnet nuget push.'
+    required: false
+    default: '--skip-duplicate'
+
+outputs:
+  packages_path:
+    description: 'Directory containing the published .nupkg files.'
+    value: ${{ steps.publish.outputs.packages_path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Download packages
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.packages-directory }}
+
+    - name: Set up .NET
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+
+    - name: NuGet login (OIDC)
+      id: login
+      uses: NuGet/login@v1
+      with:
+        user: ${{ inputs.user }}
+
+    - name: Publish to nuget.org
+      id: publish
+      shell: bash
+      env:
+        PACKAGES_DIR: ${{ inputs.packages-directory }}
+        SOURCE: ${{ inputs.source }}
+        PUSH_TOKEN: ${{ steps.login.outputs.NUGET_API_KEY }}
+        ARGS: ${{ inputs.push-args }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "$PUSH_TOKEN" ]]; then
+          echo "::error title=nuget.org credentials missing::NuGet/login did not produce an API key."
+          exit 1
+        fi
+
+        args=()
+        if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
+
+        mapfile -t packages < <(find "$PACKAGES_DIR" -maxdepth 1 -name '*.nupkg' -print | sort)
+        if (( ${#packages[@]} == 0 )); then
+          echo "::error title=No packages found::Nothing to publish in '$PACKAGES_DIR'. Check the artifact name and that the build packed the projects."
+          exit 1
+        fi
+
+        for package in "${packages[@]}"; do
+          echo "Pushing ${package##*/} to $SOURCE"
+          dotnet nuget push "$package" \
+            --api-key "$PUSH_TOKEN" \
+            --source "$SOURCE" \
+            "${args[@]}"
+        done
+
+        echo "packages_path=$PACKAGES_DIR" >> "$GITHUB_OUTPUT"

@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   build:
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.3.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.4.0
 ```
 
 That is a complete pipeline: it finds the first `*.slnx` or `*.sln` in the
@@ -39,7 +39,7 @@ repository root, installs the .NET 10 SDK, restores, builds and tests it.
 
 | Reference | Behaviour |
 |---|---|
-| `@v1.3.0` | Exact release — **recommended**. Nothing changes under your feet. |
+| `@v1.4.0` | Exact release — **recommended**. Nothing changes under your feet. |
 | `@<sha>` | Fully immutable, best for audited environments. |
 | `@main` | Bleeding edge, every commit here lands in every consumer immediately. Not recommended. |
 
@@ -53,6 +53,7 @@ so a single release pins the workflows and the actions they use together.
 
 | Release | Highlights |
 |---|---|
+| `v1.4.0` | Public `publish-nuget` composite action so cross-repository callers can publish to nuget.org with OIDC; workflows and internal actions pinned to `v1.4.0` |
 | `v1.3.0` | New Docker-aware CI pipeline and shared `docker-compose-up`, `docker-compose-wait` and `docker-compose-down` actions; all workflows now pin their composite actions to `v1.3.0` |
 | `v1.2.0` | Shared composite actions for checkout, SDK/cache setup, restore, build, test, Sonar and commit statuses; no workflow input changes |
 | `v1.1.0` | SonarQube/SonarCloud option, pending/success/failure commit statuses |
@@ -81,9 +82,11 @@ so a single release pins the workflows and the actions they use together.
 ## Shared composite actions
 
 The reusable workflows are the first consumers of the composite actions in
-[`.github/actions`](.github/actions). They are implementation details of the
-workflows, not additional public entry points, but listing them makes the
-structure easy to follow:
+[`.github/actions`](.github/actions). Most are implementation details of the
+workflows, not additional public entry points. The exception is
+[`publish-nuget`](.github/actions/publish-nuget/action.yml), which is intended to
+be called directly from a caller's job so nuget.org OIDC trusts the caller's
+workflow. Listing them makes the structure easy to follow:
 
 | Action | Used for |
 |---|---|
@@ -92,6 +95,7 @@ structure easy to follow:
 | [`restore`](.github/actions/restore/action.yml) | Resolving the solution and running `dotnet restore`. |
 | [`build`](.github/actions/build/action.yml) | Running `dotnet build --no-restore`. |
 | [`test`](.github/actions/test/action.yml) | Running `dotnet test --no-build` with code coverage using AltCover. |
+| [`publish-nuget`](.github/actions/publish-nuget/action.yml) | Downloading a packages artifact, logging in to nuget.org with OIDC and pushing the `.nupkg` files. Public entry point for cross-repository OIDC publishing. |
 | [`docker-compose-up`](.github/actions/docker-compose-up/action.yml) | Validating Docker Compose and starting the configured services. |
 | [`docker-compose-wait`](.github/actions/docker-compose-wait/action.yml) | Polling readiness URLs with a configurable timeout and interval. |
 | [`docker-compose-down`](.github/actions/docker-compose-down/action.yml) | Dumping service logs on failure and stopping the stack, tolerating cleanup errors. |
@@ -100,9 +104,10 @@ structure easy to follow:
 | [`version`](.github/actions/version/action.yml) | Reading or incrementing the `<Version>` element and computing the release branch/tag. |
 | [`validate-version-inputs`](.github/actions/validate-version-inputs/action.yml) | Validating `mode` and `version-part`. |
 
-They are referenced by full repository path and pinned to the same `vX.Y.Z` tag
-as the workflows, because a local `./.github/actions/...` reference inside a
-reusable workflow would resolve against the caller's checkout.
+The workflow-internal actions are referenced by full repository path and pinned
+to the same `vX.Y.Z` tag as the workflows, because a local `./.github/actions/...`
+reference inside a reusable workflow would resolve against the caller's checkout.
+The public `publish-nuget` action is also referenced by full repository path.
 
 ---
 
@@ -114,7 +119,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.3.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.4.0
     with:
       solution: Source/MyApp.slnx
       nuget-feed-owner: my-github-user
@@ -188,7 +193,7 @@ jobs:
       contents: read
       packages: read
       statuses: write            # only for the commit status options
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.3.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.4.0
     with:
       solution: Source/MyApp.slnx
       sonar: true
@@ -251,7 +256,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-docker-ci-build.yml@v1.3.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-docker-ci-build.yml@v1.4.0
     with:
       working-directory: Source
       solution: ETCDConfiguration.sln
@@ -334,34 +339,55 @@ Packs every packable project in the solution into `artifacts/packages` and pushe
 the `.nupkg` files. GitHub Packages is on by default and uses
 `github.repository_owner` as the feed owner; nuget.org is opt-in.
 
-> **nuget.org publishing from a reusable workflow:** OIDC trusted publishing
-> currently only works when `NuGet/login` runs in the workflow file registered
-> in the nuget.org policy. When this reusable workflow is called from another
-> repository, `NuGet/login` runs in `shared-pipelines`, so nuget.org sees
-> `job_workflow_ref` as `bjornbouetsmith/shared-pipelines/...` and rejects the
-> token exchange with HTTP 401. Until
-> [NuGet/login#6](https://github.com/NuGet/login/issues/6) and
-> [NuGetGallery#11000](https://github.com/NuGet/NuGetGallery/issues/11000) are
-> resolved, the only way to publish to nuget.org while keeping everything in
-> the shared pipeline is to use a nuget.org API key. See
-> [What you need to setup](#what-you-need-to-setup).
+> **nuget.org OIDC does not work from a reusable workflow.** nuget.org matches
+> the OIDC token's `job_workflow_ref` claim against the workflow file named in
+> the Trusted Publishing policy. When this reusable workflow is called from
+> another repository, `NuGet/login` runs inside `shared-pipelines`, so the claim
+> is `bjornbouetsmith/shared-pipelines/...` and the token exchange fails with
+> HTTP 401. See [NuGet/login#6](https://github.com/NuGet/login/issues/6) and
+> [NuGetGallery#11000](https://github.com/NuGet/NuGetGallery/issues/11000).
+>
+> **Recommended:** use this workflow for restore/build/test/pack with
+> `publish-nuget-org: false`, then publish from a job in *your* repository with
+> the [`publish-nuget` composite action](#publish-nuget-action). A composite
+> action runs as steps inside the calling job, so the OIDC claim points at your
+> workflow file and the policy matches.
+>
+> The `nuget-org-api-key` secret remains a fallback when the publish steps
+> cannot move into the caller's job. See [API-key fallback](#api-key-fallback).
 
 ```yaml
+# Build/test/pack in the shared workflow; publish from the caller job.
 jobs:
-  release:
+  build:
     permissions:
       contents: read
       packages: write
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.3.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.4.0
     with:
       solution: Source/MyApp.slnx
       allowed-actors: my-github-user
-      publish-nuget-org: true
-    secrets:
-      nuget-org-api-key: ${{ secrets.NUGET_ORG_API_KEY }}
+      publish-nuget-org: false   # publishing happens in the publish job
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write            # OIDC token for NuGet/login
+    steps:
+      - uses: bjornbouetsmith/shared-pipelines/.github/actions/publish-nuget@v1.4.0
+        with:
+          artifact-name: nuget-packages
+          user: my-nuget-account
 ```
 
-### What you need to setup
+The artifact name must match the build job's `artifact-name` (default
+`nuget-packages`), and `upload-packages-artifact` must be `true` (the default).
+The nuget.org Trusted Publishing policy stays pointed at **your** repository and
+workflow file — never at `shared-pipelines`.
+
+### API-key fallback
 
 1. **Create a nuget.org API key.** On nuget.org, open **API Keys** and create a
    new key:
@@ -381,16 +407,41 @@ jobs:
    ```
 
 When `nuget-org-api-key` is set, the workflow skips the OIDC login and uses the
-API key for `dotnet nuget push`.
+API key for `dotnet nuget push`. A complete fallback call:
+
+```yaml
+jobs:
+  release:
+    permissions:
+      contents: read
+      packages: write
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.4.0
+    with:
+      solution: Source/MyApp.slnx
+      allowed-actors: my-github-user
+      publish-nuget-org: true
+    secrets:
+      nuget-org-api-key: ${{ secrets.NUGET_ORG_API_KEY }}
+```
 
 ### OIDC / Trusted Publishing
 
 OIDC (`nuget-org-user` plus `id-token: write`) only works when `NuGet/login`
-executes in the workflow file named in the nuget.org trusted publishing policy.
+executes in the workflow file named in the nuget.org Trusted Publishing policy.
 For this shared reusable workflow, that file is in `shared-pipelines`, not in
 the calling repository, so cross-repository callers get HTTP 401 from the token
-exchange. OIDC remains usable if the release steps are copied into the calling
-repository's own workflow file and that file is registered in the policy.
+exchange. Use the [`publish-nuget` composite action](#publish-nuget-action) for
+cross-repository OIDC publishing, or copy the release steps into the calling
+repository's own workflow file and register that file in the policy.
+
+The policy for the composite-action pattern is:
+
+| Field | Value |
+|---|---|
+| Repository Owner | your GitHub user or organisation |
+| Repository | the calling repository |
+| Workflow File | the caller's workflow file, e.g. `release-nuget.yml` |
+| Environment | blank, unless the publish job sets `environment:` |
 
 ### Inputs
 
@@ -423,7 +474,7 @@ repository's own workflow file and that file is registered in the policy.
 | Secret | Required | Description |
 |---|---|---|
 | `nuget-token` | no | GitHub Packages token. Defaults to `github.token`. |
-| `nuget-org-api-key` | no | Classic nuget.org key. Required for nuget.org publishing from cross-repository reusable workflows; when empty the workflow uses OIDC and `NuGet/login`. |
+| `nuget-org-api-key` | no | Classic nuget.org key. Fallback for nuget.org publishing when the `publish-nuget` composite action cannot be used; when empty the workflow uses OIDC and `NuGet/login`. |
 
 ### Outputs
 
@@ -433,7 +484,7 @@ repository's own workflow file and that file is registered in the policy.
 
 ### Permissions
 
-Grant these in the calling job:
+Grant these in the calling build job:
 
 | Scope | Needed for |
 |---|---|
@@ -441,11 +492,83 @@ Grant these in the calling job:
 | `packages: write` | `publish-github-packages` |
 | `id-token: write` | `publish-nuget-org` with OIDC (not needed when using `nuget-org-api-key`) |
 
-Publishing to nuget.org with OIDC also needs a **trusted publishing policy** on
-nuget.org pointing at the workflow file that runs `NuGet/login`. Because that
-file is in `shared-pipelines` when this reusable workflow is called from another
-repository, cross-repository callers should use the `nuget-org-api-key` secret
-instead. See [What you need to setup](#what-you-need-to-setup).
+Cross-repository OIDC publishing should use the
+[`publish-nuget` composite action](#publish-nuget-action) in a caller job with
+`id-token: write`, rather than `publish-nuget-org: true` in this reusable
+workflow. The nuget.org policy must name the caller's workflow file.
+
+---
+
+## `publish-nuget` action
+
+[`.github/actions/publish-nuget`](.github/actions/publish-nuget/action.yml) is a
+public composite action that publishes already-packed `.nupkg` files to
+nuget.org with OIDC. Use it together with `release-nuget.yml` when the caller is
+in another repository:
+
+1. The shared workflow restores, builds, tests and packs, and uploads the
+   packages artifact (`publish-nuget-org: false`).
+2. A separate job in the caller downloads the artifact, logs in to nuget.org and
+   pushes.
+
+Because a composite action is expanded into the **calling job**, the OIDC token's
+`job_workflow_ref` claim points at the caller's workflow file. That is the file
+you register in the nuget.org Trusted Publishing policy, so the token exchange
+succeeds while the publish logic still lives in `shared-pipelines`.
+
+```yaml
+jobs:
+  build:
+    permissions:
+      contents: read
+      packages: write
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.4.0
+    with:
+      solution: Source/MyApp.slnx
+      allowed-actors: my-github-user
+      publish-nuget-org: false
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # required for NuGet/login
+    steps:
+      - uses: bjornbouetsmith/shared-pipelines/.github/actions/publish-nuget@v1.4.0
+        with:
+          artifact-name: nuget-packages
+          user: my-nuget-account
+```
+
+### Inputs
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `artifact-name` | string | `'nuget-packages'` | Workflow artifact containing the `.nupkg` files. |
+| `user` | string | — | nuget.org profile that owns the Trusted Publishing policy. Required. |
+| `packages-directory` | string | `'artifacts/packages'` | Directory to download the artifact into and publish from. |
+| `dotnet-version` | string | `'10.0.x'` | SDK used for `dotnet nuget push`. |
+| `source` | string | `'https://api.nuget.org/v3/index.json'` | nuget.org v3 feed. |
+| `push-args` | string | `'--skip-duplicate'` | Extra `dotnet nuget push` arguments. |
+
+### Outputs
+
+| Output | Description |
+|---|---|
+| `packages_path` | Directory containing the published `.nupkg` files. |
+
+### Prerequisites
+
+- The calling job needs `id-token: write` and a checkout is **not** required;
+  the action downloads the packages artifact by name.
+- The build job must upload the artifact. `release-nuget.yml` does this by
+  default (`upload-packages-artifact: true`).
+- The nuget.org Trusted Publishing policy must point at the calling repository
+  and the calling workflow file, with an empty environment unless the publish
+  job sets one.
+- `.nupkg` files must exist in the artifact. `.snupkg` symbol packages are not
+  pushed by this action.
 
 ---
 
@@ -479,7 +602,7 @@ permissions:
 
 jobs:
   release:
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/increment-version.yml@v1.3.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/increment-version.yml@v1.4.0
     with:
       version-part: ${{ inputs.version_part || 'patch' }}
     secrets: inherit
@@ -568,10 +691,11 @@ Grant these in the calling job:
    pushes, tags or opens PRs.
 3. **Allow GitHub Actions to create and approve pull requests** for
    `increment-version`.
-4. For `release-nuget` with `publish-nuget-org`: add a `NUGET_ORG_API_KEY`
-   repository secret and pass it as `nuget-org-api-key`. A trusted publishing
-   policy is only useful for OIDC when `NuGet/login` runs in the registered
-   workflow file in the same repository.
+4. For nuget.org OIDC publishing: register a Trusted Publishing policy for the
+   calling repository and workflow file, grant `id-token: write` to the publish
+   job, and use the `publish-nuget` composite action. Alternatively, add a
+   `NUGET_ORG_API_KEY` repository secret and pass it as `nuget-org-api-key` to
+   `release-nuget.yml`.
 
 ## Consuming these pipelines from a private repository
 
