@@ -648,7 +648,7 @@ jobs:
 |---|---|---|---|
 | `mode` | string | `'auto'` | `auto`, `prepare` or `tag`. |
 | `version-part` | string | `'patch'` | `patch`, `minor` or `major` (case insensitive). |
-| `version-file` | string | `'Directory.Build.props'` | File containing `<Version>x.y.z</Version>`, relative to the repository root. |
+| `version-file` | string | `'Directory.Build.props'` | File containing `<Version>x.y.z</Version>`, relative to the repository root. XML comments are ignored. |
 | `solution` | string | `''` | Solution to build/test on the release branch. |
 | `working-directory` | string | `'.'` | Directory containing the solution. |
 | `dotnet-version` | string | `'10.0.x'` | SDK to install. |

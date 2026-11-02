@@ -236,8 +236,74 @@ jobs:
         run: |
           set -euo pipefail
           git switch -c "$BRANCH"
-          sed -i -E "s#(<Version>)[0-9]+\.[0-9]+\.[0-9]+(</Version>)#\1${NEW_VERSION}\2#" "$VERSION_FILE"
-          written="$(sed -nE 's:.*<Version>([0-9]+\.[0-9]+\.[0-9]+)</Version>.*:\1:p' "$VERSION_FILE")"
+
+          # Replace the version element outside XML comments, so a commented-out
+          # or documented version is left alone.
+          tmp="$(mktemp)"
+          awk -v new="$NEW_VERSION" '
+            {
+              line = $0
+              out = ""
+              while (length(line) > 0) {
+                if (!in_comment) {
+                  start = index(line, "<!--")
+                  if (start == 0) {
+                    segment = line
+                    line = ""
+                  } else {
+                    segment = substr(line, 1, start - 1)
+                    line = substr(line, start)
+                    in_comment = 1
+                  }
+                  gsub(/<Version>[0-9]+\.[0-9]+\.[0-9]+<\/Version>/, "<Version>" new "</Version>", segment)
+                  out = out segment
+                } else {
+                  finish = index(line, "-->")
+                  if (finish == 0) {
+                    out = out line
+                    line = ""
+                  } else {
+                    out = out substr(line, 1, finish + 2)
+                    line = substr(line, finish + 3)
+                    in_comment = 0
+                  }
+                }
+              }
+              print out
+            }
+          ' "$VERSION_FILE" > "$tmp"
+          cat "$tmp" > "$VERSION_FILE"
+          rm -f "$tmp"
+
+          stripped="$(awk '
+            {
+              line = $0
+              out = ""
+              while (length(line) > 0) {
+                if (!in_comment) {
+                  start = index(line, "<!--")
+                  if (start == 0) {
+                    out = out line
+                    line = ""
+                  } else {
+                    out = out substr(line, 1, start - 1)
+                    line = substr(line, start + 4)
+                    in_comment = 1
+                  }
+                } else {
+                  finish = index(line, "-->")
+                  if (finish == 0) {
+                    line = ""
+                  } else {
+                    line = substr(line, finish + 3)
+                    in_comment = 0
+                  }
+                }
+              }
+              print out
+            }
+          ' "$VERSION_FILE")"
+          written="$(printf '%s\n' "$stripped" | sed -nE 's:.*<Version>([0-9]+\.[0-9]+\.[0-9]+)</Version>.*:\1:p')"
           if [[ "$written" != "$NEW_VERSION" ]]; then
             echo "::error title=Version bump failed::Expected '$NEW_VERSION' in '$VERSION_FILE', found '$written'."
             exit 1
