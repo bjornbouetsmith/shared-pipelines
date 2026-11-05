@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   build:
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.4.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.4.1
 ```
 
 That is a complete pipeline: it finds the first `*.slnx` or `*.sln` in the
@@ -39,7 +39,7 @@ repository root, installs the .NET 10 SDK, restores, builds and tests it.
 
 | Reference | Behaviour |
 |---|---|
-| `@v1.4.0` | Exact release — **recommended**. Nothing changes under your feet. |
+| `@v1.4.1` | Exact release — **recommended**. Nothing changes under your feet. |
 | `@<sha>` | Fully immutable, best for audited environments. |
 | `@main` | Bleeding edge, every commit here lands in every consumer immediately. Not recommended. |
 
@@ -53,6 +53,7 @@ so a single release pins the workflows and the actions they use together.
 
 | Release | Highlights |
 |---|---|
+| `v1.4.1` | All third-party GitHub Actions updated to their latest releases and pinned to commit SHAs; workflows and internal actions pinned to `v1.4.1` |
 | `v1.4.0` | Public `publish-nuget` composite action so cross-repository callers can publish to nuget.org with OIDC; workflows and internal actions pinned to `v1.4.0` |
 | `v1.3.0` | New Docker-aware CI pipeline and shared `docker-compose-up`, `docker-compose-wait` and `docker-compose-down` actions; all workflows now pin their composite actions to `v1.3.0` |
 | `v1.2.0` | Shared composite actions for checkout, SDK/cache setup, restore, build, test, Sonar and commit statuses; no workflow input changes |
@@ -153,7 +154,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.4.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.4.1
     with:
       solution: Source/MyApp.slnx
       nuget-feed-owner: my-github-user
@@ -227,7 +228,7 @@ jobs:
       contents: read
       packages: read
       statuses: write            # only for the commit status options
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.4.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.4.1
     with:
       solution: Source/MyApp.slnx
       sonar: true
@@ -290,7 +291,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-docker-ci-build.yml@v1.4.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-docker-ci-build.yml@v1.4.1
     with:
       working-directory: Source
       solution: ETCDConfiguration.sln
@@ -397,7 +398,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.4.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.4.1
     with:
       solution: Source/MyApp.slnx
       allowed-actors: my-github-user
@@ -410,7 +411,7 @@ jobs:
       contents: read
       id-token: write            # OIDC token for NuGet/login
     steps:
-      - uses: bjornbouetsmith/shared-pipelines/.github/actions/publish-nuget@v1.4.0
+      - uses: bjornbouetsmith/shared-pipelines/.github/actions/publish-nuget@v1.4.1
         with:
           artifact-name: nuget-packages
           user: my-nuget-account
@@ -449,7 +450,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.4.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.4.1
     with:
       solution: Source/MyApp.slnx
       allowed-actors: my-github-user
@@ -556,7 +557,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.4.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.4.1
     with:
       solution: Source/MyApp.slnx
       allowed-actors: my-github-user
@@ -569,7 +570,7 @@ jobs:
       contents: read
       id-token: write   # required for NuGet/login
     steps:
-      - uses: bjornbouetsmith/shared-pipelines/.github/actions/publish-nuget@v1.4.0
+      - uses: bjornbouetsmith/shared-pipelines/.github/actions/publish-nuget@v1.4.1
         with:
           artifact-name: nuget-packages
           user: my-nuget-account
@@ -636,7 +637,7 @@ permissions:
 
 jobs:
   release:
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/increment-version.yml@v1.4.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/increment-version.yml@v1.4.1
     with:
       version-part: ${{ inputs.version_part || 'patch' }}
     secrets: inherit
