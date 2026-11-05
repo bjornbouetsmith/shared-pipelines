@@ -272,7 +272,7 @@ jobs:
 
       - name: Upload packages
         if: ${{ inputs.upload-packages-artifact && success() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ inputs.artifact-name }}
           path: ${{ inputs.working-directory }}/${{ inputs.packages-directory }}
@@ -281,7 +281,7 @@ jobs:
       - name: NuGet login (OIDC)
         id: nuget-login
         if: ${{ inputs.publish-nuget-org && inputs.nuget-org-user != '' && env.NUGET_ORG_API_KEY == '' }}
-        uses: NuGet/login@v1
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
         with:
           user: ${{ inputs.nuget-org-user }}
 

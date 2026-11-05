@@ -38,13 +38,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Lint workflows
-        uses: raven-actions/actionlint@v2
+        uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
 
       - name: Validate action and workflow schemas
-        uses: mpalmer/action-validator@v0.9.0
+        uses: mpalmer/action-validator@c994f427b7c42cd5ecb1bc9315cb91c3d7d72e3d # v0.9.0
 
       - name: Validate repository conventions
         shell: bash
@@ -61,7 +61,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Check out
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check out with the local checkout action
         uses: ./.github/actions/checkout
