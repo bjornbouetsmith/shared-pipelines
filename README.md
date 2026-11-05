@@ -744,3 +744,117 @@ made private, every caller must be in the same account/org and the repository's
 2. Replace each with a 10-line caller like the ones in the quick start.
 3. Keep the triggers (`on:`) in the caller — the called workflows have no
    triggers of their own.
+
+---
+
+## Releasing this repository with an agent skill
+
+This section is for maintainers of `shared-pipelines`. The release workflow is
+packaged as an agent skill so the next release is a single prompt.
+
+- Skill instructions: [`.skills/release-shared-pipelines/SKILL.md`](.skills/release-shared-pipelines/SKILL.md)
+- Agent entry point: [`AGENTS.md`](AGENTS.md)
+- Helper scripts: `.skills/release-shared-pipelines/scripts/`
+
+### OpenCode prompts
+
+The skill ID is `release-shared-pipelines` (plural). Invoking it loads the
+instructions; describe the release in the prompt rather than passing shell-style
+flags to the skill itself.
+
+Release the next patch version — the usual case after Dependabot or an
+action-update PR has been merged:
+
+```text
+@release-shared-pipelines release the next patch version of main
+```
+
+Release an explicit version:
+
+```text
+@release-shared-pipelines cut v1.4.2 with summary "All third-party GitHub Actions updated and pinned to commit SHAs"
+```
+
+Release a minor or major version:
+
+```text
+@release-shared-pipelines release the next minor version of main
+@release-shared-pipelines release the next major version of main
+```
+
+`--version` takes an exact semantic version such as `1.4.2`, not the literal
+text `next_version`. To calculate the version automatically, use
+`--part patch`, `--part minor`, or `--part major` instead.
+
+### What the agent does
+
+1. Runs preflight checks: clean tree, `main` up to date, external actions pinned
+   to commit SHAs, target tag does not exist.
+2. Runs `prepare_release.py`, which bumps every internal `@vOLD` reference in
+   `.github/` and `README.md`, adds the release-table row, and runs
+   `tests/validate-workflows.py`.
+3. Shows the diff for review.
+4. Runs `cut_release.sh --yes`, which commits the changes, creates the annotated
+   tag, pushes `main` and the tag with `git push --atomic`, and watches CI.
+
+The equivalent commands, if you want to run them yourself:
+
+```bash
+git fetch --tags --prune origin
+git switch main
+git pull --ff-only origin main
+git status --short
+
+# Calculates the next patch from the current internal refs (for example v1.4.1 -> v1.4.2).
+python3 .skills/release-shared-pipelines/scripts/prepare_release.py \
+  --part patch \
+  --summary "All third-party GitHub Actions updated and pinned to commit SHAs"
+
+# Or pin an exact version:
+# python3 .skills/release-shared-pipelines/scripts/prepare_release.py \
+#   --version 1.4.2 \
+#   --summary "All third-party GitHub Actions updated and pinned to commit SHAs"
+
+git diff
+
+bash .skills/release-shared-pipelines/scripts/cut_release.sh \
+  --version 1.4.2 \
+  --summary "All third-party GitHub Actions updated and pinned to commit SHAs" \
+  --yes
+```
+
+`prepare_release.py` only edits files. `cut_release.sh` validates again and
+refuses to publish without `--yes`. Add `--dry-run` to either script to see the
+plan without changing anything.
+
+### Script options
+
+| Script | Option | Meaning |
+|---|---|---|
+| `prepare_release.py` | `--part patch\|minor\|major` | Calculate the next version (default: `patch`). |
+| `prepare_release.py` | `--version X.Y.Z` | Use an exact target version instead of `--part`. |
+| `prepare_release.py` | `--summary "..."` | Text for the new README release-table row. |
+| `prepare_release.py` | `--dry-run` | Print the plan without writing files. |
+| `prepare_release.py` | `--fetch` | Run `git fetch --tags --prune origin` first. |
+| `cut_release.sh` | `--version X.Y.Z` | Target version to commit and tag. |
+| `cut_release.sh` | `--summary "..."` | Annotated tag message text. |
+| `cut_release.sh` | `--yes` | Actually commit, tag, push, and watch CI. |
+| `cut_release.sh` | `--dry-run` | Validate and print the plan only. |
+
+### Preconditions and safety rules
+
+- The action-update PR must already be merged. `prepare_release.py` refuses to
+  run if any third-party action is still on a branch or major tag instead of a
+  full commit SHA.
+- `main` must be clean and equal to `origin/main`.
+- `gh` must be authenticated for the final CI watch.
+- The target `vX.Y.Z` tag must not exist locally or remotely.
+- The tag must exist before CI resolves `@vX.Y.Z`, which is why `main` and the
+  tag are pushed atomically in one command.
+- Never force-push, move, or delete a published tag. If CI fails after tagging,
+  cut the next patch instead.
+- README examples and the pinning table are updated with the release, and a new
+  release-table row is added. Historical rows are left untouched.
+
+If a release fails before the push, delete the local tag, fix the problem, and
+retry. If it fails after the push, fix forward with the next patch.
