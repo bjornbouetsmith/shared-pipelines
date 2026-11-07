@@ -116,8 +116,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! -s "$GITHUB_WORKSPACE/coverage.opencover.xml" ]]; then
-            echo "::error title=Missing coverage::The test action did not produce coverage.opencover.xml."
+          results="$GITHUB_WORKSPACE/tests/fixtures/dotnet/TestResults"
+          cobertura="$(find "$results" -name '*.cobertura.xml' -size +0c -print -quit 2>/dev/null || true)"
+          visual_studio="$(find "$results" -name '*.xml' ! -name '*.cobertura.xml' -size +0c -print -quit 2>/dev/null || true)"
+          if [[ -z "$cobertura" || -z "$visual_studio" ]]; then
+            echo "::error title=Missing coverage::The test action did not produce both cobertura and Visual Studio XML coverage reports."
+            find "$results" -type f -print 2>/dev/null || true
             exit 1
           fi
 
