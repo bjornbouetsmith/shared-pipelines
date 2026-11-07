@@ -86,7 +86,13 @@ on:
       test-args:
         description: 'Extra arguments appended to dotnet test.'
         type: string
-        default: '--verbosity normal'
+        default: ''
+      coverage-format:
+        description: >-
+          Comma-separated code coverage output formats passed to
+          Microsoft.Testing.Extensions.CodeCoverage: cobertura, xml or coverage.
+        type: string
+        default: 'cobertura,xml'
       pack-args:
         description: 'Extra arguments appended to dotnet pack.'
         type: string
@@ -242,6 +248,7 @@ jobs:
           test-project: ${{ inputs.test-project }}
           working-directory: ${{ inputs.working-directory }}
           configuration: ${{ inputs.configuration }}
+          coverage-format: ${{ inputs.coverage-format }}
           test-args: ${{ inputs.test-args }}
 
       - name: Pack

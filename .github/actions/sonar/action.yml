@@ -46,7 +46,9 @@ inputs:
     default: ''
   coverage-reports:
     description: >-
-      Value for sonar.cs.opencover.reportsPaths, relative to working-directory.
+      Value for sonar.cs.vscoveragexml.reportsPaths, relative to
+      working-directory. Microsoft.Testing.Extensions.CodeCoverage produces this
+      Visual Studio XML format with --coverage-output-format xml.
       Empty = do not import coverage.
     required: false
     default: ''
@@ -134,7 +136,7 @@ runs:
         if [[ -n "$ORGANIZATION" ]]; then args+=("/o:${ORGANIZATION}"); fi
         args+=("/d:sonar.host.url=${HOST_URL}" "/d:sonar.login=${SONAR_TOKEN}")
         if [[ -n "$COVERAGE_REPORTS" ]]; then
-          args+=("/d:sonar.cs.opencover.reportsPaths=${COVERAGE_REPORTS}")
+          args+=("/d:sonar.cs.vscoveragexml.reportsPaths=${COVERAGE_REPORTS}")
         fi
         if [[ "$QUALITY_GATE_WAIT" == "true" ]]; then
           args+=("/d:sonar.qualitygate.wait=true")

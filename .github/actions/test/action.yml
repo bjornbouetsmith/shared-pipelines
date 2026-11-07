@@ -1,8 +1,11 @@
 # Test a target that has already been built.
 #
-# Code coverage is collected using altcover and written to coverage.opencover.xml in the root of GitHub workspace.
+# Tests run through the Microsoft.Testing.Platform (MTP) integration of
+# `dotnet test`, which the calling repository opts into through global.json.
+# Code coverage is collected with Microsoft.Testing.Extensions.CodeCoverage and
+# written below TestResults/ in the working directory.
 name: Test .NET target
-description: Test a target that has already been built with code coverage using altcover.
+description: Test a target that has already been built with Microsoft.Testing.Platform and Microsoft.Testing.Extensions.CodeCoverage.
 
 inputs:
   target:
@@ -20,6 +23,12 @@ inputs:
     description: 'Build configuration.'
     required: false
     default: 'Release'
+  coverage-format:
+    description: >-
+      Comma-separated code coverage output formats passed to
+      Microsoft.Testing.Extensions.CodeCoverage: cobertura, xml or coverage.
+    required: false
+    default: 'cobertura,xml'
   test-args:
     description: 'Extra arguments appended to dotnet test. It could be test filters or other options.'
     required: false
@@ -35,19 +44,25 @@ runs:
         TARGET: ${{ inputs.target }}
         TEST_PROJECT: ${{ inputs.test-project }}
         CONFIGURATION: ${{ inputs.configuration }}
+        COVERAGE_FORMAT: ${{ inputs.coverage-format }}
         ARGS: ${{ inputs.test-args }}
       run: |
         set -euo pipefail
         args=()
         if [[ -n "$ARGS" ]]; then read -r -a args <<< "$ARGS"; fi
         subject="${TEST_PROJECT:-$TARGET}"
-        command=(dotnet test "$subject" \
+        location=()
+        case "$subject" in
+          *.sln|*.slnx) location=(--solution "$subject") ;;
+          *.csproj|*.fsproj|*.vbproj) location=(--project "$subject") ;;
+          *) location=("$subject") ;;
+        esac
+        command=(dotnet test "${location[@]}" \
           --no-build \
           --configuration "$CONFIGURATION" \
           --verbosity normal \
-          /p:AltCover=true \
-          /p:AltCoverReport="$GITHUB_WORKSPACE/coverage.opencover.xml" \
-          /p:AltCoverAttributeFilter=ExcludeFromCodeCoverage \
-          /p:AltCoverVisibleBranches=true)
+          --results-directory TestResults \
+          --coverage \
+          --coverage-output-format "$COVERAGE_FORMAT")
         command+=("${args[@]}")
         "${command[@]}"

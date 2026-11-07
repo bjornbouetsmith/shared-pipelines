@@ -111,6 +111,128 @@ stays focused on the pipeline plumbing rather than on .NET test coverage.
   `secrets: inherit`. `inherit` forwards secrets under their *own* names, so a
   repository secret called `SONAR_TOKEN` will not fill the `sonar-token`
   input — map it: `secrets: { sonar-token: <repo secret> }`.
+- **Test projects must use Microsoft.Testing.Platform.** `dotnet test` is run
+  in MTP mode and coverage uses `Microsoft.Testing.Extensions.CodeCoverage`.
+  See [Test runner and code coverage](#test-runner-and-code-coverage-microsofttestingplatform)
+  for the `global.json` and NuGet package setup.
+
+---
+
+## Test runner and code coverage (Microsoft.Testing.Platform)
+
+The test steps run `dotnet test` through its
+[Microsoft.Testing.Platform (MTP) integration][mtp-dotnet-test] and collect code
+coverage with
+[`Microsoft.Testing.Extensions.CodeCoverage`][mtp-coverage]. Both are opt-in on
+the calling side: the runner is selected in `global.json`, and the coverage
+extension is a NuGet package in each test project.
+
+[mtp-dotnet-test]: https://learn.microsoft.com/dotnet/core/tools/dotnet-test
+[mtp-coverage]: https://learn.microsoft.com/dotnet/core/testing/microsoft-testing-platform-code-coverage
+
+### 1. Opt in through `global.json`
+
+Add a `global.json` at the repository root (or in a parent directory of
+`working-directory`). The `sdk` section is optional; the important part is the
+`test` section:
+
+```json
+{
+  "$schema": "https://json.schemastore.org/global.json",
+  "sdk": {
+    "version": "10.0.100",
+    "rollForward": "latestFeature"
+  },
+  "test": {
+    "runner": "Microsoft.Testing.Platform"
+  }
+}
+```
+
+With .NET 10 and later, `"runner": "Microsoft.Testing.Platform"` makes
+`dotnet test` use MTP. In that mode, `dotnet test --coverage` and the other
+coverage options are passed to the test application directly; the extra `--`
+separator is not required.
+
+> **All test projects in the solution must use MTP.** A solution cannot mix
+> VSTest and MTP projects when `global.json` selects the MTP runner. Migrate
+> every test project before enabling the setting.
+
+### 2. Add the test packages to every test project
+
+Use an MTP-capable test framework and add the Microsoft code coverage
+extension. For xUnit v3:
+
+```xml
+<PropertyGroup>
+  <!-- xUnit v3 test projects are executables. -->
+  <OutputType>Exe</OutputType>
+  <IsTestProject>true</IsTestProject>
+  <IsPackable>false</IsPackable>
+</PropertyGroup>
+
+<ItemGroup>
+  <!-- MTP-native test framework. Replaces xunit v2 + xunit.runner.visualstudio. -->
+  <PackageReference Include="xunit.v3" Version="4.0.2" />
+
+  <!-- The coverage tool used by the shared test action. -->
+  <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.12.0" />
+</ItemGroup>
+```
+
+`Microsoft.Testing.Extensions.CodeCoverage` registers the `--coverage`,
+`--coverage-output`, `--coverage-output-format` and `--coverage-settings`
+switches. Referencing the package normally (without `PrivateAssets="all"` or a
+restricted `IncludeAssets` list) is important: MTP generates registration code
+that needs the package's compile assets.
+
+For MSTest, use the MTP-enabled project setup (`MSTest.Sdk`, or
+`MSTest.TestFramework` + `MSTest.TestAdapter` with `<EnableMSTestRunner>true</EnableMSTestRunner>`
+and `<OutputType>Exe</OutputType>`), plus the same
+`Microsoft.Testing.Extensions.CodeCoverage` reference. For NUnit, use an
+adapter that supports MTP, plus the coverage extension.
+
+Remove the VSTest-specific packages from migrated projects:
+
+- `Microsoft.NET.Test.Sdk`
+- `xunit.runner.visualstudio`
+- `coverlet.collector` / `coverlet.msbuild`
+- `AltCover`
+
+Optionally add `Microsoft.Testing.Extensions.TrxReport` and pass
+`--report-trx` through `test-args` if you also want TRX test results.
+
+### 3. What the pipeline runs
+
+The [`test`](.github/actions/test/action.yml) action resolves the subject and
+runs, by default:
+
+```text
+dotnet test <solution-or-project> \
+  --no-build \
+  --configuration Release \
+  --verbosity normal \
+  --results-directory TestResults \
+  --coverage \
+  --coverage-output-format cobertura,xml
+```
+
+The default `coverage-format` is `cobertura,xml`:
+
+- `cobertura` is the portable format used by most coverage viewers and report
+  generators.
+- `xml` is the Visual Studio coverage XML format and is the format SonarQube
+  and SonarCloud import through `sonar.cs.vscoveragexml.reportsPaths`.
+
+Coverage files are written below `TestResults/` in `working-directory` with
+GUID-based names, so several test projects and both formats can coexist. Set
+`coverage-format` to a single format when you only need one. Do not pass
+`--coverage-output` when `dotnet test` runs more than one test project: each
+project resolves the relative path from its own results directory and the
+reports overwrite each other.
+
+`upload-test-results: true` uploads the whole `TestResults` directory as the
+`test-results` artifact.
 
 ---
 
@@ -129,7 +251,7 @@ workflow. Listing them makes the structure easy to follow:
 | [`setup-dotnet`](.github/actions/setup-dotnet/action.yml) | Installing the .NET SDK, caching `~/.nuget/packages` and adding the GitHub Packages source. |
 | [`restore`](.github/actions/restore/action.yml) | Resolving the solution and running `dotnet restore`. |
 | [`build`](.github/actions/build/action.yml) | Running `dotnet build --no-restore`. |
-| [`test`](.github/actions/test/action.yml) | Running `dotnet test --no-build` with code coverage using AltCover. |
+| [`test`](.github/actions/test/action.yml) | Running `dotnet test` in Microsoft.Testing.Platform mode with code coverage using `Microsoft.Testing.Extensions.CodeCoverage`. |
 | [`publish-nuget`](.github/actions/publish-nuget/action.yml) | Downloading a packages artifact, logging in to nuget.org with OIDC and pushing the `.nupkg` files. Public entry point for cross-repository OIDC publishing. |
 | [`docker-compose-up`](.github/actions/docker-compose-up/action.yml) | Validating Docker Compose and starting the configured services. |
 | [`docker-compose-wait`](.github/actions/docker-compose-wait/action.yml) | Polling readiness URLs with a configurable timeout and interval. |
@@ -174,8 +296,9 @@ jobs:
 | `cache` | boolean | `true` | Cache `~/.nuget/packages`. |
 | `run-tests` | boolean | `true` | Run `dotnet test`. |
 | `test-project` | string | `''` | What to test. Empty = the resolved build target. Must be part of the built target because `--no-build` is used. |
-| `restore-args` / `build-args` / `test-args` | string | `''` / `''` / `'--verbosity normal'` | Extra CLI arguments. Quoted values are preserved. Use `test-args` for additional test filters, verbosity override, or other options beyond coverage.
-| `upload-test-results` | boolean | `false` | Upload test results artifact (AltCover coverage report). |
+| `coverage-format` | string | `'cobertura,xml'` | Comma-separated `Microsoft.Testing.Extensions.CodeCoverage` output formats: `cobertura`, `xml`, `coverage`. |
+| `restore-args` / `build-args` / `test-args` | string | `''` / `''` / `''` | Extra CLI arguments. Quoted values are preserved. Use `test-args` for test filters or other options; coverage is collected automatically. |
+| `upload-test-results` | boolean | `false` | Upload the `TestResults` directory (coverage reports) as an artifact. |
 | `artifact-name` | string | `'test-results'` | Artifact name. |
 | `nuget-feed-owner` | string | `''` | Add `https://nuget.pkg.github.com/<owner>/index.json` as the `github` source. |
 | `set-commit-status` | boolean | `false` | Post `pending`/`success`/`failure` commit statuses for the build. |
@@ -187,7 +310,7 @@ jobs:
 | `sonar-java-version` | string | `'17'` | JDK version for the scanner. |
 | `sonar-java-distribution` | string | `'oracle'` | JDK distribution for `actions/setup-java`. |
 | `sonar-scanner-version` | string | `''` | `dotnet-sonarscanner` tool version; empty = latest. |
-| `sonar-coverage-reports` | string | `''` | `sonar.cs.opencover.reportsPaths`, relative to `working-directory`. Empty = no coverage import. |
+| `sonar-coverage-reports` | string | `''` | `sonar.cs.vscoveragexml.reportsPaths`, relative to `working-directory`. Use the `xml` coverage format, e.g. `'**/TestResults/**/*.xml'`. Empty = no coverage import. |
 | `sonar-quality-gate-wait` | boolean | `true` | Set `sonar.qualitygate.wait=true` so a failing gate fails the job. |
 | `sonar-extra-args` | string | `''` | Extra arguments for `dotnet-sonarscanner begin`. |
 | `sonar-end-args` | string | `''` | Extra arguments for `dotnet-sonarscanner end`. |
@@ -234,7 +357,7 @@ jobs:
       sonar: true
       sonar-project-key: my-org_MyApp
       sonar-organization: my-org
-      sonar-coverage-reports: '**/coverage.opencover*.xml'
+      sonar-coverage-reports: '**/TestResults/**/*.xml'
       test-args: >-
         --filter "TestCategory!=Integration" 
     secrets:
@@ -257,9 +380,12 @@ What the option changes:
    quality gate can be a required check in branch protection — same mechanism as
    `continuous-integration/build`.
 
-Coverage generation stays in the caller's hands through `test-args` (AltCover,
-coverlet, whatever the repository already uses); `sonar-coverage-reports` only
-tells Sonar where to read the OpenCover reports from.
+Coverage is generated automatically by the shared test action with
+`Microsoft.Testing.Extensions.CodeCoverage`. Keep the `xml` format in
+`coverage-format` (the default is `cobertura,xml`) and point
+`sonar-coverage-reports` at the Visual Studio coverage XML files under
+`TestResults`. Sonar does not import the Cobertura report for .NET projects, so
+`sonar.cs.vscoveragexml.reportsPaths` is used instead of the old OpenCover path.
 
 Notes:
 
@@ -324,8 +450,8 @@ so a later file overrides an earlier one.
 
 All other inputs (`solution`, `working-directory`, `dotnet-version`,
 `global-json-file`, `configuration`, `runs-on`, `timeout-minutes`, `cache`,
-`run-tests`, `test-project`, `restore-args`, `build-args`, `test-args`,
-`upload-test-results`, `artifact-name`, `nuget-feed-owner`,
+`run-tests`, `test-project`, `coverage-format`, `restore-args`, `build-args`,
+`test-args`, `upload-test-results`, `artifact-name`, `nuget-feed-owner`,
 `set-commit-status`, `status-context` and every `sonar-*` input) behave exactly
 as in [`dotnet-ci-build.yml`](#dotnet-ci-buildyml).
 
@@ -492,6 +618,7 @@ The policy for the composite-action pattern is:
 | `cache` | boolean | `true` | Cache `~/.nuget/packages`. |
 | `run-tests` | boolean | `true` | Test before packing. |
 | `test-project` | string | `''` | What to test; empty = the build target. |
+| `coverage-format` | string | `'cobertura,xml'` | Comma-separated Microsoft code coverage output formats. |
 | `restore-args` / `build-args` / `test-args` / `pack-args` | string | see workflow | Extra CLI arguments. |
 | `packages-directory` | string | `'artifacts/packages'` | Output directory for `.nupkg`. |
 | `upload-packages-artifact` | boolean | `true` | Upload the `.nupkg` files as an artifact. |
@@ -660,6 +787,7 @@ jobs:
 | `cache` | boolean | `true` | Cache `~/.nuget/packages`. |
 | `run-tests` | boolean | `true` | Build and test the release branch before opening the PR. |
 | `restore-args` / `build-args` / `test-args` | string | see workflow | Extra CLI arguments. |
+| `coverage-format` | string | `'cobertura,xml'` | Comma-separated Microsoft code coverage output formats. |
 | `nuget-feed-owner` | string | `''` | Add a GitHub Packages source while restoring. |
 | `target-branch` | string | `'main'` | Branch the bump is based on and tagged. |
 | `branch-prefix` | string | `'release/v'` | Prefix for the release branch. |
@@ -744,6 +872,28 @@ made private, every caller must be in the same account/org and the repository's
 2. Replace each with a 10-line caller like the ones in the quick start.
 3. Keep the triggers (`on:`) in the caller — the called workflows have no
    triggers of their own.
+4. Upgrade to `v1.5.0` or later: add the `test.runner` section to `global.json`,
+   migrate every test project to an MTP-capable runner, and replace AltCover or
+   coverlet with `Microsoft.Testing.Extensions.CodeCoverage`. See
+   [Test runner and code coverage](#test-runner-and-code-coverage-microsofttestingplatform).
+
+### Upgrading from `v1.4.x` to `v1.5.0`
+
+The test action changed from AltCover to Microsoft.Testing.Platform with
+`Microsoft.Testing.Extensions.CodeCoverage`. Update the calling repository in
+the same change as the version bump:
+
+1. Add `"test": { "runner": "Microsoft.Testing.Platform" }` to `global.json`
+   (and install the .NET 10 SDK or later).
+2. Convert every test project to an MTP runner (for example `xunit.v3` instead
+   of `xunit` plus `xunit.runner.visualstudio`).
+3. Add `Microsoft.Testing.Extensions.CodeCoverage` to every test project and
+   remove `AltCover`, `coverlet.collector` and `Microsoft.NET.Test.Sdk`.
+4. If Sonar is enabled, point `sonar-coverage-reports` at the Visual Studio XML
+   reports, for example `'**/TestResults/**/*.xml'`. The default
+   `coverage-format` already includes `xml`.
+5. Change `upload-test-results` consumers to read the `TestResults` artifact
+   directory instead of `coverage.opencover.xml` in the workspace root.
 
 ---
 
