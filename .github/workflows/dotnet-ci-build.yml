@@ -8,7 +8,7 @@
 #         contents: read
 #         packages: read          # only needed when nuget-feed-owner is set
 #         statuses: write         # only needed for the commit status options
-#       uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.4.1
+#       uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.5.0
 #       with:
 #         solution: Source/MyApp.slnx
 #       secrets: inherit
@@ -214,13 +214,13 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
     steps:
       - name: Check out
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/checkout@v1.4.1
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/checkout@v1.5.0
         with:
           full-history: ${{ inputs.sonar }}
 
       - name: Set commit status to pending
         if: ${{ inputs.set-commit-status }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.4.1
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.5.0
         with:
           state: pending
           context: ${{ inputs.status-context }}
@@ -228,14 +228,14 @@ jobs:
 
       - name: Set quality gate status to pending
         if: ${{ inputs.sonar && inputs.sonar-publish-status }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.4.1
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.5.0
         with:
           state: pending
           context: ${{ inputs.sonar-status-context }}
           description: The quality gate is pending!
 
       - name: Set up .NET and NuGet
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/setup-dotnet@v1.4.1
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/setup-dotnet@v1.5.0
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
           global-json-file: ${{ inputs.global-json-file }}
@@ -245,7 +245,7 @@ jobs:
 
       - name: Prepare Sonar analysis
         if: ${{ inputs.sonar }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/sonar@v1.4.1
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/sonar@v1.5.0
         with:
           phase: setup
           token: ${{ secrets.sonar-token }}
@@ -257,7 +257,7 @@ jobs:
 
       - name: Restore dependencies
         id: restore
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/restore@v1.4.1
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/restore@v1.5.0
         with:
           solution: ${{ inputs.solution }}
           working-directory: ${{ inputs.working-directory }}
@@ -265,7 +265,7 @@ jobs:
 
       - name: Analyse with Sonar (begin)
         if: ${{ inputs.sonar }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/sonar@v1.4.1
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/sonar@v1.5.0
         with:
           phase: begin
           token: ${{ secrets.sonar-token }}
@@ -277,7 +277,7 @@ jobs:
           extra-args: ${{ inputs.sonar-extra-args }}
 
       - name: Build
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/build@v1.4.1
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/build@v1.5.0
         with:
           target: ${{ steps.restore.outputs.target }}
           working-directory: ${{ inputs.working-directory }}
@@ -286,7 +286,7 @@ jobs:
 
       - name: Test
         if: ${{ inputs.run-tests }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/test@v1.4.1
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/test@v1.5.0
         with:
           target: ${{ steps.restore.outputs.target }}
           test-project: ${{ inputs.test-project }}
@@ -297,7 +297,7 @@ jobs:
 
       - name: Set commit status to success
         if: ${{ inputs.set-commit-status && success() }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.4.1
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.5.0
         with:
           state: success
           context: ${{ inputs.status-context }}
@@ -305,7 +305,7 @@ jobs:
 
       - name: Set commit status to failure
         if: ${{ inputs.set-commit-status && failure() }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.4.1
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.5.0
         with:
           state: failure
           context: ${{ inputs.status-context }}
@@ -313,7 +313,7 @@ jobs:
 
       - name: Analyse with Sonar (end)
         if: ${{ inputs.sonar }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/sonar@v1.4.1
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/sonar@v1.5.0
         with:
           phase: end
           token: ${{ secrets.sonar-token }}
@@ -321,7 +321,7 @@ jobs:
 
       - name: Set quality gate status to success
         if: ${{ inputs.sonar && inputs.sonar-publish-status && success() }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.4.1
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.5.0
         with:
           state: success
           context: ${{ inputs.sonar-status-context }}
@@ -329,7 +329,7 @@ jobs:
 
       - name: Set quality gate status to failure
         if: ${{ inputs.sonar && inputs.sonar-publish-status && failure() }}
-        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.4.1
+        uses: bjornbouetsmith/shared-pipelines/.github/actions/commit-status@v1.5.0
         with:
           state: failure
           context: ${{ inputs.sonar-status-context }}
