@@ -15,7 +15,7 @@
 #
 # Call it from a job that has `contents: write`:
 #
-#   - uses: bjornbouetsmith/shared-pipelines/.github/actions/create-release@v1.5.0
+#   - uses: bjornbouetsmith/shared-pipelines/.github/actions/create-release@v1.6.0
 #     with:
 #       tag-name: v1.5.0
 #       files: artifacts/packages/MyApp.1.5.0.nupkg

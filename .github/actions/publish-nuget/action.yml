@@ -22,7 +22,7 @@
 #       contents: write   # create the GitHub release
 #       id-token: write   # OIDC login to nuget.org
 #     steps:
-#       - uses: bjornbouetsmith/shared-pipelines/.github/actions/publish-nuget@v1.5.0
+#       - uses: bjornbouetsmith/shared-pipelines/.github/actions/publish-nuget@v1.6.0
 #         with:
 #           artifact-name: nuget-packages
 #           user: my-nuget-account
@@ -256,7 +256,7 @@ runs:
     - name: Create GitHub release
       id: create-release
       if: ${{ inputs.create-release == 'true' }}
-      uses: bjornbouetsmith/shared-pipelines/.github/actions/create-release@v1.5.0
+      uses: bjornbouetsmith/shared-pipelines/.github/actions/create-release@v1.6.0
       with:
         tag-name: ${{ steps.release.outputs.tag }}
         name: ${{ inputs.release-name }}

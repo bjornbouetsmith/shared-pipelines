@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   build:
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.5.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.6.0
 ```
 
 That is a complete pipeline: it finds the first `*.slnx` or `*.sln` in the
@@ -39,7 +39,7 @@ repository root, installs the .NET 10 SDK, restores, builds and tests it.
 
 | Reference | Behaviour |
 |---|---|
-| `@v1.5.0` | Exact release — **recommended**. Nothing changes under your feet. |
+| `@v1.6.0` | Exact release — **recommended**. Nothing changes under your feet. |
 | `@<sha>` | Fully immutable, best for audited environments. |
 | `@main` | Bleeding edge, every commit here lands in every consumer immediately. Not recommended. |
 
@@ -53,6 +53,7 @@ so a single release pins the workflows and the actions they use together.
 
 | Release | Highlights |
 |---|---|
+| `v1.6.0` | `publish-nuget` creates a GitHub release with generated notes and the published packages; new `create-release` action |
 | `v1.5.0` | Tests run with `Microsoft.Testing.Platform` and `Microsoft.Testing.Extensions.CodeCoverage`; new `coverage-format` input and MTP migration guide |
 | `v1.4.1` | All third-party GitHub Actions updated to their latest releases and pinned to commit SHAs; workflows and internal actions pinned to `v1.4.1` |
 | `v1.4.0` | Public `publish-nuget` composite action so cross-repository callers can publish to nuget.org with OIDC; workflows and internal actions pinned to `v1.4.0` |
@@ -281,7 +282,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.5.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.6.0
     with:
       solution: Source/MyApp.slnx
       nuget-feed-owner: my-github-user
@@ -356,7 +357,7 @@ jobs:
       contents: read
       packages: read
       statuses: write            # only for the commit status options
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.5.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-ci-build.yml@v1.6.0
     with:
       solution: Source/MyApp.slnx
       sonar: true
@@ -422,7 +423,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-docker-ci-build.yml@v1.5.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/dotnet-docker-ci-build.yml@v1.6.0
     with:
       working-directory: Source
       solution: ETCDConfiguration.sln
@@ -530,7 +531,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.5.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.6.0
     with:
       solution: Source/MyApp.slnx
       allowed-actors: my-github-user
@@ -543,7 +544,7 @@ jobs:
       contents: write            # create the GitHub release
       id-token: write            # OIDC token for NuGet/login
     steps:
-      - uses: bjornbouetsmith/shared-pipelines/.github/actions/publish-nuget@v1.5.0
+      - uses: bjornbouetsmith/shared-pipelines/.github/actions/publish-nuget@v1.6.0
         with:
           artifact-name: nuget-packages
           user: my-nuget-account
@@ -584,7 +585,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.5.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.6.0
     with:
       solution: Source/MyApp.slnx
       allowed-actors: my-github-user
@@ -697,7 +698,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.5.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/release-nuget.yml@v1.6.0
     with:
       solution: Source/MyApp.slnx
       allowed-actors: my-github-user
@@ -710,7 +711,7 @@ jobs:
       contents: write   # create the GitHub release
       id-token: write   # required for NuGet/login
     steps:
-      - uses: bjornbouetsmith/shared-pipelines/.github/actions/publish-nuget@v1.5.0
+      - uses: bjornbouetsmith/shared-pipelines/.github/actions/publish-nuget@v1.6.0
         with:
           artifact-name: nuget-packages
           user: my-nuget-account
@@ -803,7 +804,7 @@ creates a GitHub release for a tag and is called by `publish-nuget`. Use it on
 its own when you attach other artifacts to a release:
 
 ```yaml
-- uses: bjornbouetsmith/shared-pipelines/.github/actions/create-release@v1.5.0
+- uses: bjornbouetsmith/shared-pipelines/.github/actions/create-release@v1.6.0
   with:
     tag-name: v1.5.0
     files: |
@@ -884,7 +885,7 @@ permissions:
 
 jobs:
   release:
-    uses: bjornbouetsmith/shared-pipelines/.github/workflows/increment-version.yml@v1.5.0
+    uses: bjornbouetsmith/shared-pipelines/.github/workflows/increment-version.yml@v1.6.0
     with:
       version-part: ${{ inputs.version_part || 'patch' }}
     secrets: inherit
