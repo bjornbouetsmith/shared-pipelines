@@ -89,10 +89,10 @@ tag or commit SHA rather than a branch, and that every `with:`/`secrets:` key
 exists on the target action or reusable workflow. The fixtures live in
 [`tests/fixtures`](tests/fixtures).
 
-The publishing, Sonar and branch/tag mutation paths are not executed in CI:
-they need real credentials or would mutate the repository. The composite
-actions behind them are still schema-validated, and their input-validation
-failure paths are exercised. The fixtures are deliberately small, so the suite
+The publishing, release-creation, Sonar and branch/tag mutation paths are not
+executed in CI: they need real credentials or would mutate the repository. The
+composite actions behind them are still schema-validated, and their
+input-validation failure paths are exercised. The fixtures are deliberately small, so the suite
 stays focused on the pipeline plumbing rather than on .NET test coverage.
 
 ## Requirements for every workflow
@@ -241,10 +241,13 @@ reports overwrite each other.
 
 The reusable workflows are the first consumers of the composite actions in
 [`.github/actions`](.github/actions). Most are implementation details of the
-workflows, not additional public entry points. The exception is
+workflows, not additional public entry points. The exceptions are
 [`publish-nuget`](.github/actions/publish-nuget/action.yml), which is intended to
 be called directly from a caller's job so nuget.org OIDC trusts the caller's
-workflow. Listing them makes the structure easy to follow:
+workflow, and
+[`create-release`](.github/actions/create-release/action.yml), which
+`publish-nuget` calls and which can also create a release on its own. Listing
+them makes the structure easy to follow:
 
 | Action | Used for |
 |---|---|
@@ -253,7 +256,8 @@ workflow. Listing them makes the structure easy to follow:
 | [`restore`](.github/actions/restore/action.yml) | Resolving the solution and running `dotnet restore`. |
 | [`build`](.github/actions/build/action.yml) | Running `dotnet build --no-restore`. |
 | [`test`](.github/actions/test/action.yml) | Running `dotnet test` in Microsoft.Testing.Platform mode with code coverage using `Microsoft.Testing.Extensions.CodeCoverage`. |
-| [`publish-nuget`](.github/actions/publish-nuget/action.yml) | Downloading a packages artifact, logging in to nuget.org with OIDC and pushing the `.nupkg` files. Public entry point for cross-repository OIDC publishing. |
+| [`publish-nuget`](.github/actions/publish-nuget/action.yml) | Downloading a packages artifact, logging in to nuget.org with OIDC, pushing the `.nupkg` files and creating the GitHub release. Public entry point for cross-repository OIDC publishing. |
+| [`create-release`](.github/actions/create-release/action.yml) | Creating a GitHub release for a tag with generated release notes, the automatic source archives and attached assets; called by `publish-nuget` and usable on its own. |
 | [`docker-compose-up`](.github/actions/docker-compose-up/action.yml) | Validating Docker Compose and starting the configured services. |
 | [`docker-compose-wait`](.github/actions/docker-compose-wait/action.yml) | Polling readiness URLs with a configurable timeout and interval. |
 | [`docker-compose-down`](.github/actions/docker-compose-down/action.yml) | Dumping service logs on failure and stopping the stack, tolerating cleanup errors. |
@@ -511,7 +515,8 @@ the `.nupkg` files. GitHub Packages is on by default and uses
 >
 > **Recommended:** use this workflow for restore/build/test/pack with
 > `publish-nuget-org: false`, then publish from a job in *your* repository with
-> the [`publish-nuget` composite action](#publish-nuget-action). A composite
+> the [`publish-nuget` composite action](#publish-nuget-action), which also
+> creates the GitHub release for the published version. A composite
 > action runs as steps inside the calling job, so the OIDC claim points at your
 > workflow file and the policy matches.
 >
@@ -535,7 +540,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write            # create the GitHub release
       id-token: write            # OIDC token for NuGet/login
     steps:
       - uses: bjornbouetsmith/shared-pipelines/.github/actions/publish-nuget@v1.5.0
@@ -547,7 +552,9 @@ jobs:
 The artifact name must match the build job's `artifact-name` (default
 `nuget-packages`), and `upload-packages-artifact` must be `true` (the default).
 The nuget.org Trusted Publishing policy stays pointed at **your** repository and
-workflow file — never at `shared-pipelines`.
+workflow file — never at `shared-pipelines`. The `publish` job needs
+`contents: write` because it also creates the GitHub release; add
+`create-release: false` to the action if you only want to publish packages.
 
 ### API-key fallback
 
@@ -585,6 +592,10 @@ jobs:
     secrets:
       nuget-org-api-key: ${{ secrets.NUGET_ORG_API_KEY }}
 ```
+
+This fallback publishes the packages only. The GitHub release is created by the
+[`publish-nuget` composite action](#publish-nuget-action), so run that action in
+a caller job when you also want a release.
 
 ### OIDC / Trusted Publishing
 
@@ -666,13 +677,14 @@ workflow. The nuget.org policy must name the caller's workflow file.
 
 [`.github/actions/publish-nuget`](.github/actions/publish-nuget/action.yml) is a
 public composite action that publishes already-packed `.nupkg` files to
-nuget.org with OIDC. Use it together with `release-nuget.yml` when the caller is
-in another repository:
+nuget.org with OIDC and then creates the GitHub release for the published
+version. Use it together with `release-nuget.yml` when the caller is in another
+repository:
 
 1. The shared workflow restores, builds, tests and packs, and uploads the
    packages artifact (`publish-nuget-org: false`).
-2. A separate job in the caller downloads the artifact, logs in to nuget.org and
-   pushes.
+2. A separate job in the caller downloads the artifact, logs in to nuget.org,
+   pushes the packages and creates the release.
 
 Because a composite action is expanded into the **calling job**, the OIDC token's
 `job_workflow_ref` claim points at the caller's workflow file. That is the file
@@ -695,7 +707,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write   # create the GitHub release
       id-token: write   # required for NuGet/login
     steps:
       - uses: bjornbouetsmith/shared-pipelines/.github/actions/publish-nuget@v1.5.0
@@ -714,17 +726,62 @@ jobs:
 | `dotnet-version` | string | `'10.0.x'` | SDK used for `dotnet nuget push`. |
 | `source` | string | `'https://api.nuget.org/v3/index.json'` | nuget.org v3 feed. |
 | `push-args` | string | `'--skip-duplicate'` | Extra `dotnet nuget push` arguments. |
+| `create-release` | boolean | `true` | Create the GitHub release after a successful publish. |
+| `release-tag` | string | `''` | Release tag. Empty = `release-tag-prefix` plus the version read from the published `.nupkg` files. |
+| `release-tag-prefix` | string | `'v'` | Prefix used when the tag is derived, for example `v` for `v1.5.0`. |
+| `release-name` | string | `''` | Release title. Empty = the title GitHub generates from the notes. |
+| `release-notes` | string | `''` | Custom notes prepended to the generated release notes. |
+| `generate-release-notes` | boolean | `true` | Generate release notes with the GitHub Release Notes API. |
+| `release-notes-start-tag` | string | `''` | Tag to start the generated notes from. Empty = the previous release. |
+| `release-draft` | boolean | `false` | Create the release as a draft. |
+| `release-prerelease` | string | `'auto'` | `true`, `false` or `auto` (a semver prerelease suffix in the tag marks the release as prerelease). |
+| `release-verify-tag` | boolean | `true` | Fail when the tag does not exist instead of creating it at the workflow commit. |
+| `release-if-exists` | string | `'update-assets'` | Behaviour when the release exists: `update-assets`, `skip` or `fail`. |
+| `release-assets` | string | `''` | Newline-separated asset paths or globs. Empty = the published `.nupkg` files. |
+| `release-token` | string | `''` | Token used for the release. Needs `contents: write`. Empty = `github.token`. |
 
 ### Outputs
 
 | Output | Description |
 |---|---|
 | `packages_path` | Directory containing the published `.nupkg` files. |
+| `release_tag` | Tag of the GitHub release. Empty when `create-release` is false. |
+| `release_url` | HTML URL of the GitHub release. Empty when `create-release` is false. |
+
+### The GitHub release
+
+Unless `create-release: false` is set, the action creates a release for the
+published version. It is the same result as filling in **Draft a new release** on
+GitHub:
+
+- **Tag** — `release-tag` when set, otherwise `release-tag-prefix` plus the
+  version parsed from the `.nupkg` file names (`MyApp.1.5.0.nupkg` becomes
+  `v1.5.0`). All packages must share one version; a release has a single tag, so
+  set `release-tag` explicitly when they do not. With the default
+  `release-verify-tag: true` the tag has to exist; set it to `false` to create
+  the tag at the workflow commit.
+- **Release notes** — GitHub's generated notes ("What's Changed", new
+  contributors and the full changelog link), as produced by the **Generate
+  release notes** button. `release-notes` is prepended, so you can add a summary
+  of your own. Set `generate-release-notes: false` to use only your text.
+- **Source code** — GitHub automatically attaches the *Source code (zip)* and
+  *Source code (tar.gz)* archives, exactly as on a manually created release.
+- **Assets** — every published `.nupkg` file is attached. Use `release-assets`
+  to attach different files, for example `artifacts/packages/*.snupkg`.
+- **Prerelease** — with `release-prerelease: auto`, a tag like
+  `v2.0.0-beta.1` is marked as a prerelease, like the GitHub page does.
+
+The release is created **after** the packages are pushed, so a failed push never
+leaves a release behind. Re-running a publish is safe: the default
+`release-if-exists: update-assets` keeps the existing release and notes and only
+re-uploads the listed assets, `skip` leaves the release untouched, and `fail`
+turns an existing release into an error.
 
 ### Prerequisites
 
-- The calling job needs `id-token: write` and a checkout is **not** required;
-  the action downloads the packages artifact by name.
+- The calling job needs `id-token: write` and, for the release, `contents: write`.
+  A checkout is **not** required: the action downloads the packages artifact by
+  name and passes `github.repository` to `gh` through `GH_REPO`.
 - The build job must upload the artifact. `release-nuget.yml` does this by
   default (`upload-packages-artifact: true`).
 - The nuget.org Trusted Publishing policy must point at the calling repository
@@ -732,6 +789,68 @@ jobs:
   job sets one.
 - `.nupkg` files must exist in the artifact. `.snupkg` symbol packages are not
   pushed by this action.
+- The runner needs the GitHub CLI (`gh`), `jq` and bash 4+. GitHub-hosted Linux
+  and macOS runners provide all of them.
+- Set `create-release: false` when the job cannot have `contents: write`; the
+  packages are still published.
+
+---
+
+## `create-release` action
+
+[`.github/actions/create-release`](.github/actions/create-release/action.yml)
+creates a GitHub release for a tag and is called by `publish-nuget`. Use it on
+its own when you attach other artifacts to a release:
+
+```yaml
+- uses: bjornbouetsmith/shared-pipelines/.github/actions/create-release@v1.5.0
+  with:
+    tag-name: v1.5.0
+    files: |
+      artifacts/packages/*.nupkg
+      artifacts/reports/coverage.zip
+```
+
+The action uses `gh release create`, so the release has the same pieces as one
+created on the GitHub website: the generated source archives, the generated
+release notes (optionally with custom text prepended) and the attached assets.
+
+### Inputs
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `tag-name` | string | — | Tag to release. Required. |
+| `name` | string | `''` | Release title. Empty = generated from the notes, or the tag. |
+| `notes` | string | `''` | Custom notes, prepended to the generated notes. |
+| `generate-notes` | boolean | `true` | Generate release notes with the Release Notes API. |
+| `notes-start-tag` | string | `''` | Tag to start the generated notes from. Empty = the previous release. |
+| `target-commitish` | string | `''` | Branch or commit used when the tag has to be created. Ignored when the tag exists or `verify-tag` is true. Empty = the default branch. |
+| `draft` | boolean | `false` | Create a draft release. |
+| `prerelease` | string | `'false'` | `true`, `false` or `auto` (detect a semver prerelease suffix in the tag). |
+| `make-latest` | string | `''` | `true`, `false` or empty (GitHub decides). |
+| `verify-tag` | boolean | `true` | Fail when the tag does not exist instead of creating it. |
+| `files` | string | `''` | Newline-separated asset paths or globs. Empty = source archives only. |
+| `if-exists` | string | `'update-assets'` | Behaviour when the release exists: `update-assets`, `skip` or `fail`. |
+| `token` | string | `''` | Token used for the release. Needs `contents: write`. Empty = `github.token`. |
+| `repository` | string | `''` | Repository to release in, `owner/name`. Empty = `github.repository`. |
+
+### Outputs
+
+| Output | Description |
+|---|---|
+| `release_url` | HTML URL of the created or existing release. |
+| `tag_name` | Tag of the release. |
+
+### Prerequisites
+
+- `contents: write` in the calling job.
+- A checkout is not required; `GH_REPO` is set from `repository`.
+- `gh`, `jq` and bash 4+ on the runner.
+- With `if-exists: update-assets` the assets are uploaded with `--clobber`, so
+  re-runs converge instead of failing on an already existing asset. Release
+  notes are never rewritten for an existing release, so manual edits are safe.
+- Repository-level release immutability, if enabled, rejects asset updates and
+  tag changes; use `if-exists: skip` in that case.
 
 ---
 
@@ -852,14 +971,15 @@ Grant these in the calling job:
 1. **Actions → General → Actions permissions:** "Allow all actions and reusable
    workflows", or explicitly allow `bjornbouetsmith/shared-pipelines`.
 2. **Actions → General → Workflow permissions:** read and write if a workflow
-   pushes, tags or opens PRs.
+   pushes, tags, creates GitHub releases or opens PRs.
 3. **Allow GitHub Actions to create and approve pull requests** for
    `increment-version`.
 4. For nuget.org OIDC publishing: register a Trusted Publishing policy for the
    calling repository and workflow file, grant `id-token: write` to the publish
-   job, and use the `publish-nuget` composite action. Alternatively, add a
-   `NUGET_ORG_API_KEY` repository secret and pass it as `nuget-org-api-key` to
-   `release-nuget.yml`.
+   job, and use the `publish-nuget` composite action. The action also creates the
+   GitHub release, so grant `contents: write` as well (or set
+   `create-release: false`). Alternatively, add a `NUGET_ORG_API_KEY` repository
+   secret and pass it as `nuget-org-api-key` to `release-nuget.yml`.
 
 ## Consuming these pipelines from a private repository
 

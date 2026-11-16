@@ -242,6 +242,24 @@ jobs:
             exit 1
           fi
 
+      - name: Creating a release without a tag must fail
+        id: release_without_tag
+        continue-on-error: true
+        uses: ./.github/actions/create-release
+        with:
+          tag-name: ''
+
+      - name: Verify the missing release tag was rejected
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.release_without_tag.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ "$OUTCOME" != "failure" ]]; then
+            echo "::error title=Expected failure::Creating a release without a tag should have failed, but the step concluded '$OUTCOME'."
+            exit 1
+          fi
+
       - name: Start Docker Compose with the local action
         uses: ./.github/actions/docker-compose-up
         with:

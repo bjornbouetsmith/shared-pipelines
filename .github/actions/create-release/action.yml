@@ -1,0 +1,358 @@
+# Create the GitHub release for a version.
+#
+# The release is created with the GitHub CLI, so it contains the same pieces as
+# a release created from the "Draft a new release" page:
+#
+#   * the automatically generated source archives (Source code zip/tar.gz);
+#   * release notes from the GitHub Release Notes API ("Generate release
+#     notes"), including the "What's Changed" list, new contributors and the
+#     full changelog link;
+#   * every asset passed in `files`, for example the .nupkg files that were
+#     published to nuget.org.
+#
+# A checkout is not required: the repository comes from `repository` (default
+# github.repository) and is exported to gh as GH_REPO.
+#
+# Call it from a job that has `contents: write`:
+#
+#   - uses: bjornbouetsmith/shared-pipelines/.github/actions/create-release@v1.5.0
+#     with:
+#       tag-name: v1.5.0
+#       files: artifacts/packages/MyApp.1.5.0.nupkg
+#
+# Re-running is safe: with the default `if-exists: update-assets` an existing
+# release keeps its notes and only the listed assets are uploaded again.
+#
+# `create-release` is called by the publish-nuget action; it can also be used
+# on its own to attach anything else to a release.
+name: Create GitHub release
+description: >-
+  Create a GitHub release for a tag with generated release notes, the automatic
+  source archives and the listed assets, or update the assets of an existing
+  release.
+
+inputs:
+  tag-name:
+    description: 'Tag to release. Required. The tag is created at target-commitish when it does not exist and verify-tag is false.'
+    required: false
+    default: ''
+  name:
+    description: 'Release title. Empty = the title GitHub generates from the notes (the tag when notes are not generated).'
+    required: false
+    default: ''
+  notes:
+    description: >-
+      Custom release notes. With generate-notes they are prepended to the
+      generated notes, exactly like the summary field on the GitHub release
+      page.
+    required: false
+    default: ''
+  generate-notes:
+    description: 'Generate release notes with the GitHub Release Notes API (the "Generate release notes" button).'
+    required: false
+    default: 'true'
+  notes-start-tag:
+    description: 'Tag to start the generated notes from. Empty = the previous release.'
+    required: false
+    default: ''
+  target-commitish:
+    description: >-
+      Branch or commit used when the tag has to be created. Ignored when the
+      tag exists or verify-tag is true. Empty = the repository default branch.
+    required: false
+    default: ''
+  draft:
+    description: 'Create the release as a draft instead of publishing it.'
+    required: false
+    default: 'false'
+  prerelease:
+    description: 'Mark the release as a prerelease: true, false or auto (auto = the tag has a semantic version prerelease suffix).'
+    required: false
+    default: 'false'
+  make-latest:
+    description: 'Mark the release as latest: true, false or empty (GitHub decides, like the release page).'
+    required: false
+    default: ''
+  verify-tag:
+    description: 'Fail when the tag does not exist instead of creating it from target-commitish.'
+    required: false
+    default: 'true'
+  files:
+    description: >-
+      Newline-separated asset paths or globs to attach. Empty = only the
+      automatic source archives.
+    required: false
+    default: ''
+  if-exists:
+    description: 'Behaviour when the release already exists: update-assets, skip or fail.'
+    required: false
+    default: 'update-assets'
+  token:
+    description: 'Token used for the release. Needs contents: write. Empty = github.token.'
+    required: false
+    default: ''
+  repository:
+    description: 'Repository to release in, owner/name. Empty = github.repository.'
+    required: false
+    default: ''
+
+outputs:
+  release_url:
+    description: 'HTML URL of the created or existing release.'
+    value: ${{ steps.release.outputs.release_url }}
+  tag_name:
+    description: 'Tag of the release.'
+    value: ${{ steps.release.outputs.tag_name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate inputs
+      shell: bash
+      env:
+        TAG_NAME: ${{ inputs.tag-name }}
+        GENERATE_NOTES: ${{ inputs.generate-notes }}
+        DRAFT: ${{ inputs.draft }}
+        PRERELEASE: ${{ inputs.prerelease }}
+        MAKE_LATEST: ${{ inputs.make-latest }}
+        VERIFY_TAG: ${{ inputs.verify-tag }}
+        IF_EXISTS: ${{ inputs.if-exists }}
+      run: |
+        set -euo pipefail
+
+        tag="$TAG_NAME"
+        tag="${tag#"${tag%%[![:space:]]*}"}"
+        tag="${tag%"${tag##*[![:space:]]}"}"
+        if [[ -z "$tag" ]]; then
+          echo "::error title=Release tag missing::tag-name is required."
+          exit 1
+        fi
+        if [[ "$tag" == *$'\n'* ]]; then
+          echo "::error title=Invalid release tag::tag-name must be a single line."
+          exit 1
+        fi
+
+        for pair in \
+          "generate-notes:$GENERATE_NOTES" \
+          "draft:$DRAFT" \
+          "verify-tag:$VERIFY_TAG"; do
+          name="${pair%%:*}"
+          value="${pair#*:}"
+          case "${value,,}" in
+            true|false) ;;
+            *)
+              echo "::error title=Invalid boolean input::$name must be true or false (got '$value')."
+              exit 1
+              ;;
+          esac
+        done
+
+        case "${PRERELEASE,,}" in
+          true|false|auto) ;;
+          *)
+            echo "::error title=Invalid prerelease input::prerelease must be true, false or auto (got '$PRERELEASE')."
+            exit 1
+            ;;
+        esac
+        case "${MAKE_LATEST,,}" in
+          true|false|'') ;;
+          *)
+            echo "::error title=Invalid make-latest input::make-latest must be true, false or empty (got '$MAKE_LATEST')."
+            exit 1
+            ;;
+        esac
+        case "${IF_EXISTS,,}" in
+          update-assets|skip|fail) ;;
+          *)
+            echo "::error title=Invalid if-exists input::if-exists must be update-assets, skip or fail (got '$IF_EXISTS')."
+            exit 1
+            ;;
+        esac
+
+        # Resolve the prerelease switch once, so the create step only compares
+        # normalised values.
+        case "${PRERELEASE,,}" in
+          true) prerelease=true ;;
+          false) prerelease=false ;;
+          auto)
+            if [[ "$tag" =~ [0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z] ]]; then
+              prerelease=true
+            else
+              prerelease=false
+            fi
+            ;;
+        esac
+
+        echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+        {
+          echo "RELEASE_GENERATE_NOTES=${GENERATE_NOTES,,}"
+          echo "RELEASE_DRAFT=${DRAFT,,}"
+          echo "RELEASE_PRERELEASE=$prerelease"
+          echo "RELEASE_MAKE_LATEST=${MAKE_LATEST,,}"
+          echo "RELEASE_VERIFY_TAG=${VERIFY_TAG,,}"
+          echo "RELEASE_IF_EXISTS=${IF_EXISTS,,}"
+        } >> "$GITHUB_ENV"
+
+    - name: Collect assets
+      shell: bash
+      env:
+        FILES: ${{ inputs.files }}
+      run: |
+        set -euo pipefail
+
+        assets_file="$RUNNER_TEMP/create-release-assets.txt"
+        : > "$assets_file"
+        count=0
+
+        while IFS= read -r entry || [[ -n "$entry" ]]; do
+          # Trim leading and trailing whitespace from the line.
+          entry="${entry#"${entry%%[![:space:]]*}"}"
+          entry="${entry%"${entry##*[![:space:]]}"}"
+          [[ -z "$entry" ]] && continue
+
+          if [[ "$entry" == *[\*\?\[]* ]]; then
+            matches=()
+            while IFS= read -r match; do
+              [[ -n "$match" ]] && matches+=("$match")
+            done < <(compgen -G "$entry" | sort || true)
+            if (( ${#matches[@]} == 0 )); then
+              echo "::error title=Release asset not found::No files match '$entry'."
+              exit 1
+            fi
+            printf '%s\n' "${matches[@]}" >> "$assets_file"
+            count=$((count + ${#matches[@]}))
+          else
+            if [[ ! -f "$entry" ]]; then
+              echo "::error title=Release asset not found::'$entry' does not exist."
+              exit 1
+            fi
+            printf '%s\n' "$entry" >> "$assets_file"
+            count=$((count + 1))
+          fi
+        done <<< "$FILES"
+
+        echo "Collected $count asset(s) for the release."
+
+    - name: Check for an existing release
+      id: existing
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token || github.token }}
+        GH_REPO: ${{ inputs.repository || github.repository }}
+      run: |
+        set -euo pipefail
+
+        encoded_tag="$(jq -rn --arg tag "$RELEASE_TAG" '$tag|@uri')"
+        error_file="$RUNNER_TEMP/create-release-lookup.err"
+
+        if existing_url="$(gh api "repos/{owner}/{repo}/releases/tags/$encoded_tag" \
+          --jq .html_url 2>"$error_file")"; then
+          echo "Release $RELEASE_TAG already exists at $existing_url."
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+          echo "url=$existing_url" >> "$GITHUB_OUTPUT"
+        elif grep -q 'HTTP 404' "$error_file"; then
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+          echo "url=" >> "$GITHUB_OUTPUT"
+        else
+          echo "::error title=Release lookup failed::Could not read the release for tag '$RELEASE_TAG'."
+          cat "$error_file" >&2 || true
+          exit 1
+        fi
+
+    - name: Create or update the release
+      id: release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token || github.token }}
+        GH_REPO: ${{ inputs.repository || github.repository }}
+        NAME: ${{ inputs.name }}
+        NOTES: ${{ inputs.notes }}
+        NOTES_START_TAG: ${{ inputs.notes-start-tag }}
+        TARGET_COMMITISH: ${{ inputs.target-commitish }}
+        RELEASE_EXISTS: ${{ steps.existing.outputs.exists }}
+        RELEASE_EXISTS_URL: ${{ steps.existing.outputs.url }}
+      run: |
+        set -euo pipefail
+
+        assets_file="$RUNNER_TEMP/create-release-assets.txt"
+        files=()
+        if [[ -s "$assets_file" ]]; then
+          mapfile -t files < "$assets_file"
+        fi
+
+        if [[ "$RELEASE_EXISTS" == "true" ]]; then
+          case "$RELEASE_IF_EXISTS" in
+            skip)
+              echo "Release $RELEASE_TAG already exists at $RELEASE_EXISTS_URL; leaving it unchanged."
+              ;;
+            fail)
+              echo "::error title=Release already exists::A release for '$RELEASE_TAG' already exists at $RELEASE_EXISTS_URL."
+              exit 1
+              ;;
+            update-assets)
+              if (( ${#files[@]} > 0 )); then
+                gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+                echo "Uploaded ${#files[@]} asset(s) to the existing release $RELEASE_TAG."
+              else
+                echo "Release $RELEASE_TAG already exists at $RELEASE_EXISTS_URL; no assets to upload."
+              fi
+              ;;
+          esac
+          release_url="$RELEASE_EXISTS_URL"
+        else
+          notes_file="$RUNNER_TEMP/create-release-notes.md"
+          printf '%s' "$NOTES" > "$notes_file"
+
+          args=()
+          if [[ "$RELEASE_GENERATE_NOTES" == "true" ]]; then
+            args+=(--generate-notes)
+            if [[ -n "$NOTES" ]]; then
+              args+=(--notes "$NOTES")
+            fi
+            if [[ -n "$NOTES_START_TAG" ]]; then
+              args+=(--notes-start-tag "$NOTES_START_TAG")
+            fi
+          else
+            # An explicit file keeps gh non-interactive even for an empty body.
+            args+=(--notes-file "$notes_file")
+          fi
+
+          if [[ -n "$NAME" ]]; then
+            args+=(--title "$NAME")
+          fi
+          if [[ "$RELEASE_DRAFT" == "true" ]]; then
+            args+=(--draft)
+          fi
+          if [[ "$RELEASE_PRERELEASE" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+          case "$RELEASE_MAKE_LATEST" in
+            true) args+=(--latest) ;;
+            false) args+=(--latest=false) ;;
+          esac
+          if [[ "$RELEASE_VERIFY_TAG" == "true" ]]; then
+            args+=(--verify-tag)
+          elif [[ -n "$TARGET_COMMITISH" ]]; then
+            args+=(--target "$TARGET_COMMITISH")
+          fi
+
+          if (( ${#files[@]} > 0 )); then
+            gh release create "$RELEASE_TAG" "${args[@]}" "${files[@]}"
+          else
+            gh release create "$RELEASE_TAG" "${args[@]}"
+          fi
+
+          encoded_tag="$(jq -rn --arg tag "$RELEASE_TAG" '$tag|@uri')"
+          release_url="$(gh api "repos/{owner}/{repo}/releases/tags/$encoded_tag" --jq .html_url)"
+          echo "Created release $RELEASE_TAG at $release_url."
+        fi
+
+        echo "release_url=$release_url" >> "$GITHUB_OUTPUT"
+        echo "tag_name=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+        {
+          echo "### GitHub release"
+          echo ""
+          echo "- Tag: \`$RELEASE_TAG\`"
+          echo "- Release: $release_url"
+        } >> "$GITHUB_STEP_SUMMARY"
