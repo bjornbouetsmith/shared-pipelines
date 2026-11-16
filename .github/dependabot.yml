@@ -14,6 +14,7 @@ updates:
       - "/.github/actions/build"
       - "/.github/actions/checkout"
       - "/.github/actions/commit-status"
+      - "/.github/actions/create-release"
       - "/.github/actions/docker-compose-down"
       - "/.github/actions/docker-compose-up"
       - "/.github/actions/docker-compose-wait"
